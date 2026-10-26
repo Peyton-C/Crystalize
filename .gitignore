@@ -1,0 +1,19 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+dist/
+build/
+
+# The mod's exchange folder, when the mod is run from the repo in tests
+crystalize/mod/Crystalize/ipc/
+
+# Editor and AI Stuff
+.claude/settings.local.json
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+[Dd]esktop.ini

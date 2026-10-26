@@ -1,0 +1,115 @@
+-- Loads the mod against a fake FUSER, answers one request, and prints the game calls
+-- it made as JSON. Usage: lua mod_harness.lua <main.lua> <ipc dir> [missing class]
+--
+-- The fake stands in for UE4SS's API: objects answer IsValid, properties are fields, and
+-- any method not defined below is recorded instead of run.
+
+local main, dir, missing = arg[1], arg[2], arg[3]
+CRYSTALIZE_IPC_DIR = dir
+
+local calls = {}
+local mod -- the mod's exports, for its JSON encoder and NULL
+
+local function name(s)
+    return { ToString = function() return s end }
+end
+
+local INVALID = { IsValid = function() return false end }
+
+local function object(label, fields)
+    local o = fields or {}
+    o._label = label
+    o.IsValid = function() return true end
+    return setmetatable(o, {
+        __index = function(_, method)
+            return function(_, ...)
+                local args = mod.array()
+                for i = 1, select("#", ...) do
+                    local v = select(i, ...)
+                    if v == nil then
+                        v = mod.NULL
+                    elseif type(v) == "table" and v._label then
+                        v = v._label
+                    end
+                    args[i] = v
+                end
+                calls[#calls + 1] = { object = label, method = method, args = args }
+            end
+        end,
+    })
+end
+
+local song = object("CallMeMaybe", {
+    songShortName = name("callmemaybe"), artist = name("Carly Rae Jepsen"), Genre = 6, year = 2012,
+    IsOwnedAndInstalled = function() return true end,
+})
+local dlc = object("KingsAndQueens", {
+    songShortName = name("kingsandqueens"), artist = name("Thirty Seconds to Mars"), Genre = 8,
+    year = 2009, IsOwnedAndInstalled = function() return false end,
+})
+local function tarray(n)
+    return { GetArrayNum = function() return n end }
+end
+
+local function cel(short, celType, of)
+    return object(short, {
+        shortName = name(short), Title = name("Call Me Maybe"), CelType = celType,
+        Key = 7, mode = 0, BPM = 120, instrument = 3, song = of or song, SongLengthTicks = 30720,
+        Transposes = { C = -5, Db = -6, D = 5, Eb = 4, E = 3, F = 2, Gb = 1, G = 0, Ab = -1,
+                       A = -2, Bb = -3, B = -4 },
+        MajorMidiSongAssets = tarray(1), MinorMidiSongAssets = tarray(0),
+    })
+end
+local cels = { cel("callmemaybebt", 0), cel("callmemaybebs", 1), cel("kingsandqueensbt", 0, dlc) }
+
+local function disc(short)
+    return object("disc " .. short, { GetCelShortName = function() return name(short) end })
+end
+
+local world = {
+    BP_Deck_C = {
+        object("Deck0", { track = 0, CurPlayingDisc = disc("callmemaybebt"), CurQueuedDisc = INVALID }),
+        object("Deck1", { track = 1, CurPlayingDisc = INVALID, CurQueuedDisc = disc("callmemaybebs") }),
+        object("Deck2", { track = 2, CurPlayingDisc = INVALID, CurQueuedDisc = INVALID }),
+        object("Deck3", { track = 3, CurPlayingDisc = INVALID, CurQueuedDisc = INVALID }),
+    },
+    SongCelData = cels,
+    HypeAudio = { object("HypeAudio", {
+        GetKey = function() return 7 end, GetKeyMode = function() return 1 end,
+        GetCurrentBPM = function() return 120 end,
+        GetMinBpm = function() return 60 end, GetMaxBpm = function() return 200 end,
+    }) },
+    DeskState = { object("DeskState") },
+    AudioController = { object("AudioController") },
+}
+if missing then
+    world[missing] = nil
+end
+
+function FindAllOf(class)
+    return world[class]
+end
+
+function FindFirstOf(class)
+    return (world[class] or {})[1] or INVALID
+end
+
+function ExecuteInGameThread(fn)
+    fn()
+end
+
+function LoopAsync() end
+
+print = function() end -- the mod's own log lines would muddle the JSON on stdout
+
+-- The mod deletes a request left from before it loaded, so this one goes back after
+local f = assert(io.open(dir .. "request.lua"))
+local request = f:read("a")
+f:close()
+mod = dofile(main)
+f = assert(io.open(dir .. "request.lua", "w"))
+f:write(request)
+f:close()
+
+mod.poll(dir)
+io.stdout:write(mod.encode(mod.array(calls)))

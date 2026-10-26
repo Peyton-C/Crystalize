@@ -1,0 +1,627 @@
+"""Crystalize as a Model Context Protocol server, so an agent can DJ in FUSER.
+
+The protocol is spoken by hand, newline-delimited JSON-RPC over stdin and stdout, as
+bejeweled does: the tools need a few dozen lines of it, and Crystalize has no
+dependencies otherwise.
+
+Decks are 1 to 4 here, as a person counts them, and 0 to 3 in the game.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import time
+
+from . import __version__, music, store
+from .bridge import GameError
+from .mixes import Plan
+from .player import Player
+
+PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
+
+INSTRUCTIONS = (
+    "Crystalize plays FUSER, Harmonix's DJ game, through a mod running inside it. FUSER has "
+    "four decks, numbered 1 to 4. Each plays one disc, a single part of a song: its beat, "
+    "bass, loop or lead, the lead usually being the vocal. FUSER conforms every disc to the "
+    "session's key and tempo and brings it in on the beat. That makes any two discs play "
+    "together, not sound good together: a mix is planned with plan_mix, whose checks catch "
+    "what cannot be heard from here, and played with play_mix, which keeps time. The "
+    "build_mix prompt sets out the steps. Keys are written Ab for major and Abm for minor."
+)
+
+# A failed attempt to reach FUSER costs a second and a half, so while it is closed the
+# server plans from the saved library and tries the game again only this often
+OFFLINE_RETRY_SECONDS = 30
+
+DECK = {"type": "integer", "minimum": 1, "maximum": 4, "description": "1 to 4"}
+KEY = {"type": "string", "description": "Ab for A flat major, Abm for minor"}
+
+STEP = {
+    "type": "object",
+    "properties": {
+        "bar": {"type": "integer", "description": "From 0, the bar the opening discs land on"},
+        "do": {"type": "string", "enum": ["drop", "eject", "key", "tempo", "mute", "unmute"]},
+        "deck": DECK,
+        "disc": {"type": "string", "description": "For drop: a disc name from search_songs"},
+        "key": KEY,
+        "bpm": {"type": "integer"},
+    },
+    "required": ["bar", "do"],
+}
+
+PLAN = {
+    "key": {**KEY, "description": "The opening key, " + KEY["description"]},
+    "bpm": {"type": "integer", "description": "The opening tempo"},
+    "steps": {"type": "array", "items": STEP,
+              "description": "What happens on which bar. Steps on one bar happen together"},
+    "end_bar": {"type": "integer",
+                "description": "The bar the mix ends on. Defaults to 16 after the last step"},
+}
+
+TOOLS = [
+    {
+        "name": "get_state",
+        "description": "The session's key and tempo, the tempo range FUSER allows, each deck's "
+                       "playing and queued disc, and the mix playing, if one is: the bar it is "
+                       "on and the bar its next step is on.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "search_songs",
+        "description": "Search the songs you can play, custom songs included and DLC you do "
+                       "not own left out. Returns the total that match and up to `limit` of "
+                       "them: id, title, artist, year, genre, the song's own BPM and key, its "
+                       "tags, and its discs with name, type and instrument. Works from the saved "
+                       "library while FUSER is closed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string",
+                          "description": "Words that must all appear in the title or artist"},
+                "genre": {"type": "string", "enum": [g for g in music.GENRES if g]},
+                "key": {"type": "string", "description": "Exact key, such as Ab or F#m"},
+                "bpm_min": {"type": "number"},
+                "bpm_max": {"type": "number"},
+                "near": {"type": "string",
+                         "description": "A song id: only songs in the same, relative or a "
+                                        "neighbouring key and within 8% of its tempo, or of "
+                                        "half or double it, which FUSER shifts and stretches "
+                                        "least to play beside it. It narrows the library and "
+                                        "does not choose: most of what it returns will not "
+                                        "belong"},
+                "energy_min": {"type": "integer", "description": "Lowest energy tag, 1 to 10"},
+                "energy_max": {"type": "integer"},
+                "untagged": {"type": "boolean", "description": "Only songs with no tags yet"},
+                "limit": {"type": "integer", "description": "Default 25"},
+                "offset": {"type": "integer", "description": "Skip this many, for the next page"},
+            },
+        },
+    },
+    {
+        "name": "tag_songs",
+        "description": "Write down what songs are like to hear, for every later session to "
+                       "search: energy from 1, a still ballad, to 10, the hardest in the "
+                       "library; style in a few words; what the lyrics are about; and "
+                       "mood_clash when the sound and the words pull opposite ways. Fields "
+                       "given replace those there; clear removes a song's tags.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"songs": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string", "description": "A song id from search_songs"},
+                    "energy": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "style": {"type": "string"},
+                    "lyrics": {"type": "string"},
+                    "mood_clash": {"type": "boolean"},
+                    "clear": {"type": "boolean"},
+                },
+                "required": ["id"],
+            }}},
+            "required": ["songs"],
+        },
+    },
+    {
+        "name": "plan_mix",
+        "description": "Check a mix without playing it. Returns its length and the timeline in "
+                       "segments, each with the bars it covers, the time it starts, the key, "
+                       "tempo and energy, what each deck plays with the pitch shift and stretch "
+                       "FUSER gives it, and checks: two vocals, no beat, no bass, two basses, "
+                       "one song on every deck, pitched far, no version in the session's mode, "
+                       "stretched too far. Checks over the whole mix follow: steps off the "
+                       "phrase, stretches where nothing changes, discs dropped twice, key "
+                       "clashes, tempo and energy jumps. A plan that cannot play is refused "
+                       "with every problem listed.",
+        "inputSchema": {"type": "object", "properties": {
+            **PLAN,
+            "mix": {"type": "string", "description": "A saved mix to check, in place of a plan"},
+            "from_bar": {"type": "integer", "description": "List segments from this bar only"},
+            "to_bar": {"type": "integer", "description": "List segments up to this bar only"},
+        }},
+    },
+    {
+        "name": "save_mix",
+        "description": "Save a plan under a name, refusing one plan_mix would refuse. Saving "
+                       "the name again replaces it.",
+        "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, **PLAN},
+                        "required": ["name", "key", "bpm", "steps"]},
+    },
+    {
+        "name": "load_mix",
+        "description": "A saved plan, to change and check again.",
+        "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}},
+                        "required": ["name"]},
+    },
+    {
+        "name": "list_mixes",
+        "description": "The saved mixes, with when each was saved and its number of steps.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "play_mix",
+        "description": "Play a saved mix or a plan in FUSER, each step on its bar, stopping any "
+                       "mix already playing. Decks the plan does not fill at bar 0 are emptied "
+                       "first. Returns at once; get_state follows it. Needs a freestyle session.",
+        "inputSchema": {"type": "object", "properties": {
+            **PLAN, "mix": {"type": "string", "description": "A saved mix, in place of a plan"},
+        }},
+    },
+    {
+        "name": "stop_mix",
+        "description": "Stop the mix playing. The decks keep playing what they have.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "drop_disc",
+        "description": "Play a disc on a deck now, replacing what it held. It lands on the next "
+                       "bar. With `queue`, it waits on the deck until drop_queue.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"disc": {"type": "string", "description": "A disc name"},
+                           "deck": DECK, "queue": {"type": "boolean"}},
+            "required": ["disc", "deck"],
+        },
+    },
+    {
+        "name": "drop_queue",
+        "description": "Drop every queued disc at once.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "eject",
+        "description": "Stop a deck and take its disc off.",
+        "inputSchema": {"type": "object", "properties": {"deck": DECK}, "required": ["deck"]},
+    },
+    {
+        "name": "set_key",
+        "description": "Change the session's key now. Every deck follows.",
+        "inputSchema": {"type": "object", "properties": {"key": KEY}, "required": ["key"]},
+    },
+    {
+        "name": "set_tempo",
+        "description": "Change the session's tempo now, within the range get_state gives.",
+        "inputSchema": {"type": "object", "properties": {"bpm": {"type": "integer"}},
+                        "required": ["bpm"]},
+    },
+    {
+        "name": "mute_deck",
+        "description": "Mute or unmute a deck without taking its disc off.",
+        "inputSchema": {"type": "object", "properties": {"deck": DECK, "mute": {"type": "boolean"}},
+                        "required": ["deck", "mute"]},
+    },
+    {
+        "name": "solo_deck",
+        "description": "Solo or unsolo a deck.",
+        "inputSchema": {"type": "object", "properties": {"deck": DECK, "solo": {"type": "boolean"}},
+                        "required": ["deck", "solo"]},
+    },
+]
+
+# The craft a plan's checks cannot catch, given once when the agent asks for the workflow
+# rather than paid for in every session's tool descriptions
+MIX_CRAFT = (
+    "A FUSER mix is layers from different songs: one song's beat under another's bass, a "
+    "third's loop and a fourth's vocal. Keep one vocal at a time. Change something every 8 "
+    "or 16 bars, always on a multiple of 8, and one or two decks at a time, so the listener "
+    "hears each new part arrive; a new vocal over a familiar beat is the strongest move. "
+    "Muting the beat for 4 or 8 bars and bringing it back is a breakdown and a drop. Choose "
+    "the session key and tempo for the vocal, which suffers most from shifting, and change "
+    "key only to the relative key or a neighbour. At 120 BPM a bar is two seconds."
+)
+
+PROMPTS = [
+    {
+        "name": "tag_library",
+        "description": "Tag FUSER's songs with energy, style and lyrics, in a session that does "
+                       "nothing else",
+        "arguments": [],
+        "text": lambda a: (
+            "Tag Crystalize's library so later sessions can choose songs by how they sound. "
+            "Search search_songs with untagged: true, 50 at a time, and tag each song you know "
+            "with tag_songs: energy, style, what the lyrics are about, and mood_clash when the "
+            "sound and the words pull opposite ways. Tag from what you know of the recording. "
+            "Leave out a song you don't recognise rather than guess from its title, and page "
+            "past the ones you left with offset. When only songs you don't know are left, say "
+            "how many."),
+    },
+    {
+        "name": "build_mix",
+        "description": "Choose songs, plan a mix, fix what its checks find, then save and play it",
+        "arguments": [("brief", "What the mix is for: an occasion, a style, a feeling", False),
+                      ("minutes", "About how long it should run", False),
+                      ("name", "A name to save it under", False)],
+        "text": lambda a: (
+            "Build a mix in FUSER with Crystalize"
+            + (f", about {a['minutes']} minutes long" if a.get("minutes") else "")
+            + (f": {a['brief']}" if a.get("brief") else "") + ".\n\n" + MIX_CRAFT + "\n\n"
+            "1. get_state for the tempo range. Choose songs by what you know of them: style, "
+            "era, lyrics and mood, from their tags where they have them. search_songs near a "
+            "song narrows the library to what FUSER shifts least beside it; key and tempo "
+            "matching doesn't make two songs belong together.\n"
+            "2. Write the plan and run plan_mix. Fix every segment check and every check over "
+            "the mix, or know why you are keeping it: a breakdown has no beat on purpose. Plan "
+            "a long mix a stretch at a time with from_bar and to_bar.\n"
+            f"3. save_mix {a.get('name') or 'it'} as you go, so the work survives a restart.\n"
+            "4. play_mix it, follow it with get_state, and say what you built and why."),
+    },
+    {
+        "name": "review_mix",
+        "description": "Find and fix the weak parts of a saved mix",
+        "arguments": [("name", "The saved mix, from list_mixes", True)],
+        "text": lambda a: (
+            f"Review the saved mix {a['name']} with Crystalize.\n\n{MIX_CRAFT}\n\n"
+            f"load_mix it and run plan_mix on it. Fix each segment whose checks show trouble, "
+            f"then the checks over the whole mix, and look for what the checks cannot see: a "
+            f"vocal that stays too long, a song whose parts never meet another's, an ending "
+            f"that just stops. save_mix {a['name']} and say what you changed and what you left."),
+    },
+]
+
+
+class Server:
+    def __init__(self, bridge, reader, writer):
+        self.bridge = bridge
+        self.reader, self.writer = reader, writer
+        self.player = Player(bridge)
+        self.client = None
+        self._writing = threading.Lock()
+        self._songs_lock = threading.Lock()
+        self._songs: list[dict] = []
+        self._discs: dict[str, dict] = {}
+        self._bpm_range = None
+        self._songs_session = None
+        self._offline_since = None
+        self._calls: list[threading.Thread] = []
+
+    # ------------------------------------------------------------------ protocol
+
+    def run(self) -> int:
+        for line in self.reader:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except ValueError:
+                self._send({"jsonrpc": "2.0", "id": None,
+                            "error": {"code": -32700, "message": "parse error"}})
+                continue
+            for one in message if isinstance(message, list) else [message]:
+                if isinstance(one, dict):
+                    self._handle(one)
+        for call in self._calls:
+            call.join()
+        self.player.stop()
+        return 0
+
+    def _send(self, message: dict) -> None:
+        data = (json.dumps(message, ensure_ascii=False) + "\n").encode("utf-8")
+        with self._writing:
+            self.writer.write(data)
+            self.writer.flush()
+
+    def _handle(self, message: dict) -> None:
+        method, id_ = message.get("method"), message.get("id")
+        params = message.get("params") or {}
+        if id_ is None or method is None:
+            return
+
+        if method == "initialize":
+            info = params.get("clientInfo") or {}
+            self.client = " ".join(str(v) for v in (info.get("name"), info.get("version")) if v) or None
+            asked = params.get("protocolVersion")
+            result = {
+                "protocolVersion": asked if asked in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0],
+                "capabilities": {"tools": {}, "prompts": {}},
+                "serverInfo": {"name": "crystalize", "version": __version__},
+                "instructions": INSTRUCTIONS,
+            }
+        elif method == "ping":
+            result = {}
+        elif method == "tools/list":
+            result = {"tools": TOOLS}
+        elif method == "prompts/list":
+            result = {"prompts": [
+                {"name": p["name"], "description": p["description"],
+                 "arguments": [{"name": n, "description": d, "required": r}
+                               for n, d, r in p["arguments"]]} for p in PROMPTS]}
+        elif method == "prompts/get":
+            prompt = next((p for p in PROMPTS if p["name"] == params.get("name")), None)
+            given = {k: v for k, v in (params.get("arguments") or {}).items() if v}
+            missing = next((n for n, _, r in prompt["arguments"] if r and n not in given),
+                           None) if prompt else None
+            if prompt is None or missing:
+                why = f"{prompt['name']} needs {missing}" if prompt else "unknown prompt"
+                self._send({"jsonrpc": "2.0", "id": id_,
+                            "error": {"code": -32602, "message": why}})
+                return
+            result = {"description": prompt["description"], "messages": [
+                {"role": "user", "content": {"type": "text", "text": prompt["text"](given)}}]}
+        elif method == "tools/call":
+            # On its own thread, so a ping is answered while FUSER is slow to reply
+            call = threading.Thread(target=self._call, args=(id_, params))
+            self._calls = [c for c in self._calls if c.is_alive()] + [call]
+            call.start()
+            return
+        else:
+            self._send({"jsonrpc": "2.0", "id": id_,
+                        "error": {"code": -32601, "message": f"unknown method {method}"}})
+            return
+        self._send({"jsonrpc": "2.0", "id": id_, "result": result})
+
+    def _call(self, id_, params: dict) -> None:
+        name, started = params.get("name"), time.monotonic()
+        tool = getattr(self, f"_tool_{name}", None) if isinstance(name, str) else None
+        schema = next((t["inputSchema"] for t in TOOLS if t["name"] == name), None)
+        if tool is None or schema is None:
+            self._send({"jsonrpc": "2.0", "id": id_,
+                        "error": {"code": -32602, "message": f"unknown tool {name}"}})
+            return
+        args = params.get("arguments") or {}
+        try:
+            # Refused rather than ignored, as pink diamond does: an argument the tool does
+            # not take is a misunderstanding, and ignoring it hides one
+            unknown = sorted(set(args) - set(schema["properties"]))
+            if unknown:
+                raise ValueError(f"{name} has no argument {', '.join(unknown)}; it takes "
+                                 f"{', '.join(sorted(schema['properties'])) or 'none'}")
+            text, failed = json.dumps(tool(args), ensure_ascii=False), False
+        except (GameError, ValueError, KeyError) as e:
+            text = str(e) if not isinstance(e, KeyError) else f"{name} needs {e.args[0]}"
+            failed = True
+        # A reply stays in the agent's context, so what a session costs is which tools it
+        # called and how much each sent back. Clients keep stderr, so it is said there
+        print(f"call {name}: {len(text.encode())} bytes{', failed' if failed else ''}, "
+              f"{int((time.monotonic() - started) * 1000)} ms", file=sys.stderr, flush=True)
+        self._send({"jsonrpc": "2.0", "id": id_,
+                    "result": {"content": [{"type": "text", "text": text}], "isError": failed}})
+
+    # ------------------------------------------------------------------- library
+
+    def _library(self) -> list[dict]:
+        """FUSER's songs, fetched once per game session and saved, so that while FUSER is
+        closed the server plans from the last library it saw."""
+        with self._songs_lock:
+            stale = not self._songs or self.bridge.session != self._songs_session
+            retry = self._offline_since is None or \
+                time.monotonic() - self._offline_since > OFFLINE_RETRY_SECONDS
+            if stale and retry:
+                try:
+                    discs = self.bridge.call("discs")
+                    try:
+                        state = self.bridge.call("state")
+                        self._bpm_range = [state["bpm_min"], state["bpm_max"]]
+                    except GameError:
+                        pass  # out of a session, the range is the last one known
+                    store.save_library(discs, self._bpm_range)
+                    self._set_library(discs)
+                    self._songs_session, self._offline_since = self.bridge.session, None
+                except GameError:
+                    saved = store.load_library()
+                    if saved is None:
+                        raise
+                    if not self._songs:
+                        self._bpm_range = saved.get("bpm_range")
+                        self._set_library(saved["discs"])
+                    self._offline_since = time.monotonic()
+            return self._songs
+
+    def _set_library(self, discs: list[dict]) -> None:
+        self._songs = music.songs(discs)
+        self._discs = music.disc_index(self._songs, discs)
+
+    def _describe(self, name):
+        if name is None:
+            return None
+        self._library()
+        disc = self._discs.get(name)
+        if disc is None:
+            return {"name": name}
+        return {k: disc[k] for k in ("name", "type", "song", "artist")}
+
+    def _plan(self, args: dict) -> tuple[str | None, Plan]:
+        self._library()
+        if args.get("mix"):
+            plan = store.load_mix(args["mix"])
+            return plan["name"], Plan(plan, self._discs, self._bpm_range, store.tags())
+        return None, Plan(args, self._discs, self._bpm_range, store.tags())
+
+    # --------------------------------------------------------------------- tools
+
+    def _tool_get_state(self, args: dict) -> dict:
+        state = self.bridge.call("state")
+        decks = []
+        for i, deck in enumerate(state["decks"]):
+            deck = deck or {}
+            decks.append({"deck": i + 1, "playing": self._describe(deck.get("playing")),
+                          "queued": self._describe(deck.get("queued"))})
+        self._bpm_range = [state["bpm_min"], state["bpm_max"]]
+        result = {"key": music.key_name(state["key"], state["mode"]), "bpm": state["bpm"],
+                  "bpm_range": self._bpm_range, "decks": decks}
+        mix = self.player.status()
+        if mix:
+            result["mix"] = {k: v for k, v in mix.items() if k != "started_beat" and v is not None}
+        return result
+
+    def _tool_search_songs(self, args: dict) -> dict:
+        words = str(args.get("query") or "").casefold().split()
+        genre = args.get("genre")
+        key = music.key_name(*music.parse_key(args["key"])) if args.get("key") else None
+        low, high = args.get("bpm_min"), args.get("bpm_max")
+        e_low, e_high = args.get("energy_min"), args.get("energy_max")
+        tags = store.tags()
+        songs = self._library()
+
+        near = None
+        if args.get("near"):
+            near = next((s for s in songs if s["id"] == args["near"]), None)
+            if near is None:
+                raise ValueError(f"no song with id {args['near']}")
+
+        found = []
+        for song in songs:
+            if not song["owned"]:
+                continue
+            text = f"{song['artist'] or ''} {song['title'] or ''}".casefold()
+            if not all(word in text for word in words):
+                continue
+            if genre and song["genre"] != genre:
+                continue
+            if key and song["key"] != key:
+                continue
+            bpm = song["bpm"]
+            if (low is not None or high is not None) and not bpm:
+                continue
+            if (low is not None and bpm < low) or (high is not None and bpm > high):
+                continue
+            tag = tags.get(song["id"], {})
+            if args.get("untagged") and tag:
+                continue
+            energy = tag.get("energy")
+            if (e_low is not None or e_high is not None) and energy is None:
+                continue
+            if (e_low is not None and energy < e_low) or (e_high is not None and energy > e_high):
+                continue
+            if near and (song is near or not _near(near, song)):
+                continue
+            found.append({**song, **({"tags": tag} if tag else {})})
+
+        found = [{k: v for k, v in s.items() if k != "owned"} for s in found]
+        offset = max(0, int(args.get("offset") or 0))
+        limit = max(1, int(args.get("limit") or 25))
+        return {"total": len(found), "songs": found[offset:offset + limit]}
+
+    def _tool_tag_songs(self, args: dict) -> dict:
+        self._library()
+        known = {s["id"] for s in self._songs}
+        tagged, unknown = [], []
+        for entry in args["songs"]:
+            song_id = entry.get("id")
+            if song_id not in known:
+                unknown.append(song_id)
+                continue
+            energy = entry.get("energy")
+            if energy is not None and (not isinstance(energy, int) or not 1 <= energy <= 10):
+                raise ValueError(f"{song_id}: energy must be 1 to 10")
+            store.tag(song_id, entry, clear=bool(entry.get("clear")))
+            tagged.append(song_id)
+        result = {"tagged": len(tagged)}
+        if unknown:
+            result["unknown_ids"] = unknown
+        return result
+
+    def _tool_plan_mix(self, args: dict) -> dict:
+        _, plan = self._plan(args)
+        return plan.report(args.get("from_bar"), args.get("to_bar"))
+
+    def _tool_save_mix(self, args: dict) -> dict:
+        name = str(args["name"]).strip()
+        if not name:
+            raise ValueError("a mix needs a name")
+        _, plan = self._plan(args)
+        fields = {k: args[k] for k in ("key", "bpm", "steps", "end_bar") if k in args}
+        report = plan.report(0, 0)
+        store.save_mix(name, fields, self.client)
+        return {"saved": name, "bars": report["bars"], "length": report["length"],
+                "checks": len(report["checks"])}
+
+    def _tool_load_mix(self, args: dict) -> dict:
+        mix = store.load_mix(args["name"])
+        return {k: mix[k] for k in ("name", "saved", "key", "bpm", "steps", "end_bar") if k in mix}
+
+    def _tool_list_mixes(self, args: dict) -> dict:
+        return {"mixes": store.list_mixes()}
+
+    def _tool_play_mix(self, args: dict) -> dict:
+        name, plan = self._plan(args)
+        schedule = plan.schedule()
+        opening = {a["deck"] for op, a in (schedule[0][1] if schedule else []) if op == "drop"}
+        self.bridge.call("ping")  # a closed game fails here, not inside the player
+        report = plan.report(0, 0)
+        self.player.start(name or "unsaved plan", schedule, plan.end, opening)
+        return {"playing": name or "unsaved plan", "bars": report["bars"],
+                "length": report["length"]}
+
+    def _tool_stop_mix(self, args: dict) -> dict:
+        self.player.stop()
+        return {"stopped": True}
+
+    def _tool_drop_disc(self, args: dict) -> dict:
+        disc = str(args["disc"])
+        self._library()
+        known = self._discs.get(disc)
+        if known and known["owned"] is False:
+            raise GameError(f"{disc} is from {known['song']}, DLC you do not own, and would "
+                            f"play silence. search_songs lists only songs you own")
+        try:
+            self.bridge.call("drop", name=disc, deck=_deck(args), queue=bool(args.get("queue")))
+        except GameError as e:
+            if "no disc named" in str(e):
+                raise GameError(f"FUSER has no disc named {disc}, search_songs lists them") from e
+            raise
+        return {"deck": args["deck"], "disc": self._describe(disc),
+                "queued": bool(args.get("queue"))}
+
+    def _tool_drop_queue(self, args: dict) -> dict:
+        self.bridge.call("drop_queue")
+        return {"dropped": True}
+
+    def _tool_eject(self, args: dict) -> dict:
+        self.bridge.call("eject", deck=_deck(args))
+        return {"deck": args["deck"], "ejected": True}
+
+    def _tool_set_key(self, args: dict) -> dict:
+        key, mode = music.parse_key(str(args["key"]))
+        self.bridge.call("set_key", key=key, mode=mode)
+        return {"key": music.key_name(key, mode)}
+
+    def _tool_set_tempo(self, args: dict) -> dict:
+        bpm = int(args["bpm"])
+        self.bridge.call("set_tempo", bpm=bpm)
+        return {"bpm": bpm}
+
+    def _tool_mute_deck(self, args: dict) -> dict:
+        self.bridge.call("mute", deck=_deck(args), on=bool(args["mute"]))
+        return {"deck": args["deck"], "muted": bool(args["mute"])}
+
+    def _tool_solo_deck(self, args: dict) -> dict:
+        self.bridge.call("solo", deck=_deck(args), on=bool(args["solo"]))
+        return {"deck": args["deck"], "soloed": bool(args["solo"])}
+
+
+def _near(a: dict, b: dict) -> bool:
+    """Whether FUSER would shift and stretch song b little to play it beside song a."""
+    if not a["bpm"] or not b["bpm"] or not a["key"] or not b["key"]:
+        return False
+    stretch = music.stretch_percent(b["bpm"], a["bpm"])
+    if stretch is None or abs(stretch) > music.STRETCH_PERCENT:
+        return False
+    return music.key_relation(music.parse_key(a["key"]), music.parse_key(b["key"])) != "clash"
+
+
+def _deck(args: dict) -> int:
+    deck = args.get("deck")
+    if not isinstance(deck, int) or isinstance(deck, bool) or not 1 <= deck <= 4:
+        raise ValueError(f"deck must be 1 to 4, got {deck!r}")
+    return deck - 1
