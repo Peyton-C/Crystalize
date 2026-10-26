@@ -33,6 +33,8 @@ The mod stays thin. It wraps FUSER's functions, reports enums as the numbers the
 
 Everything in the mod that touches a game object runs through `ExecuteInGameThread`. FUSER crashes with UE4SS's ProcessEvent hook on, so nothing may depend on it: no `RegisterHook` on Blueprint functions, no `NotifyOnNewObject`.
 
+Clawd is a second, optional mod and has nothing to do with the bridge: `crystalize/mod/Clawd` is its Lua, `clawd.py` fetches its pak from a GitHub release and writes the `.sig`, `game.py` installs and removes both, and `tools/clawd` rebuilds the pak. The pak is never committed: it is 8 MB, replaced on every rebuild, and rebuilding needs a UE 4.24 source build. A new one is tried in the game with `clawd on --pak`, published as a release, and pinned by `RELEASE` and `SHA256` in `clawd.py`. His mod must never spawn actors on the stage or re-create objects under names already in use; `docs/clawd.md` and its comments say what broke.
+
 FUSER's classes and functions come from a UE4SS header dump. Generate one with the dumper keybind or `GenerateSDK()` when a new feature needs a function that is not wrapped yet; the dump is not kept in the repo.
 
 Tests run with `uv run pytest`. The mod's tests run it in a real Lua 5.4 against a fake FUSER in `tests/mod_harness.lua`, and skip without `lua`. Nothing replaces trying a change in the game, so say which parts were tried there and which were not.

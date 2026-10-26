@@ -26,3 +26,12 @@ claude mcp add crystalize -- uv run --directory /path/to/Crystalize crystalize m
 ```
 
 See [MCP server](docs/mcp.md) for the tools, and [Bridge](docs/bridge.md) for how the server reaches the game.
+
+## Clawd
+Optionally, Crystalize puts Clawd, in headphones, in place of your avatar:
+
+```sh
+uv run crystalize clawd on
+```
+
+`clawd off` takes him out. See [Clawd](docs/clawd.md).

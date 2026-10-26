@@ -11,6 +11,12 @@ from importlib import resources
 DEFAULT_GAME = "~/.local/share/Steam/steamapps/common/Fuser"
 MOD = "Crystalize"
 
+# Optional: Clawd in headphones in place of FUSER's avatars, a Lua mod and the pak with
+# his model, which comes from a GitHub release. Paks in Content/Paks/~mods are mounted
+# like the game's own
+CLAWD = "Clawd"
+CLAWD_PAK = "Clawd_P"
+
 
 class SetupError(Exception):
     """FUSER or UE4SS is not where Crystalize needs it."""
@@ -32,22 +38,72 @@ def ipc_dir(game: str) -> str:
     return os.path.join(ue4ss_dir(game), "Mods", MOD, "ipc")
 
 
+def mod_paks_dir(game: str) -> str:
+    return os.path.join(game, "Fuser", "Content", "Paks", "~mods")
+
+
 def install(game: str) -> list[str]:
     """Copy the mod into UE4SS and switch it on. Returns any problems found in the setup."""
+    _copy_mod(game, MOD)
+    os.makedirs(os.path.join(ue4ss_dir(game), "Mods", MOD, "ipc"), exist_ok=True)
+    return check(game)
+
+
+def clawd_on(game: str, pak: str) -> None:
+    """Put Clawd's model, the pak at `pak`, and his mod into FUSER, and switch the mod on.
+    The .sig is written here from the pak, so the two can never disagree."""
+    from .clawd import signature
+
+    _copy_mod(game, CLAWD)
+    os.makedirs(mod_paks_dir(game), exist_ok=True)
+    target = os.path.join(mod_paks_dir(game), CLAWD_PAK)
+    shutil.copy(pak, target + ".pak")
+    with open(pak, "rb") as f:
+        data = f.read()
+    with open(target + ".sig", "wb") as f:
+        f.write(signature(data))
+
+
+def clawd_off(game: str) -> None:
+    """Take Clawd out again, model and mod, and switch the mod off."""
+    _require_ue4ss(game)
+    for ext in (".pak", ".sig"):
+        _remove(os.path.join(mod_paks_dir(game), CLAWD_PAK + ext))
+    shutil.rmtree(os.path.join(ue4ss_dir(game), "Mods", CLAWD), ignore_errors=True)
+    _switch(game, CLAWD, False)
+
+
+def clawd_installed(game: str) -> bool:
+    return os.path.exists(os.path.join(mod_paks_dir(game), CLAWD_PAK + ".pak"))
+
+
+def _require_ue4ss(game: str) -> str:
     ue4ss = ue4ss_dir(game)
     if not os.path.isdir(ue4ss):
         raise SetupError(f"UE4SS is not installed in {win64_dir(game)}, see docs/setup.md")
+    return ue4ss
 
-    source = resources.files("crystalize").joinpath("mod", MOD)
-    target = os.path.join(ue4ss, "Mods", MOD)
+
+def _copy_mod(game: str, mod: str) -> None:
+    ue4ss = _require_ue4ss(game)
+    source = resources.files("crystalize").joinpath("mod", mod)
     with resources.as_file(source) as path:
-        shutil.copytree(path, target, dirs_exist_ok=True,
+        shutil.copytree(path, os.path.join(ue4ss, "Mods", mod), dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("ipc"))
-    os.makedirs(os.path.join(target, "ipc"), exist_ok=True)
+    _switch(game, mod, True)
 
-    _enable_txt(os.path.join(ue4ss, "Mods", "mods.txt"))
-    _enable_json(os.path.join(ue4ss, "Mods", "mods.json"))
-    return check(game)
+
+def _switch(game: str, mod: str, on: bool) -> None:
+    mods = os.path.join(ue4ss_dir(game), "Mods")
+    _enable_txt(os.path.join(mods, "mods.txt"), mod, on)
+    _enable_json(os.path.join(mods, "mods.json"), mod, on)
+
+
+def _remove(path: str) -> None:
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
 
 
 def check(game: str) -> list[str]:
@@ -93,12 +149,12 @@ def _hooks(path: str) -> dict[str, str]:
     return {k: v.strip() for k, v in parser.items("Hooks")}
 
 
-def _enable_txt(path: str) -> None:
-    """Switch the mod on in mods.txt, ahead of UE4SS's Keybinds line, which must stay last."""
+def _enable_txt(path: str, mod: str, on: bool) -> None:
+    """Switch a mod in mods.txt, adding it ahead of UE4SS's Keybinds line, which must stay last."""
     lines = open(path, encoding="utf-8").read().splitlines() if os.path.exists(path) else []
-    entry = f"{MOD} : 1"
+    entry = f"{mod} : {1 if on else 0}"
     for i, line in enumerate(lines):
-        if line.split(":")[0].strip() == MOD:
+        if line.split(":")[0].strip() == mod:
             lines[i] = entry
             break
     else:
@@ -110,18 +166,18 @@ def _enable_txt(path: str) -> None:
         f.write("\n".join(lines) + "\n")
 
 
-def _enable_json(path: str) -> None:
+def _enable_json(path: str, mod: str, on: bool) -> None:
     if not os.path.exists(path):
         return
     with open(path, encoding="utf-8") as f:
         mods = json.load(f)
-    for mod in mods:
-        if mod.get("mod_name") == MOD:
-            mod["mod_enabled"] = True
+    for entry in mods:
+        if entry.get("mod_name") == mod:
+            entry["mod_enabled"] = on
             break
     else:
-        at = next((i for i, mod in enumerate(mods) if mod.get("mod_name") == "Keybinds"),
+        at = next((i for i, entry in enumerate(mods) if entry.get("mod_name") == "Keybinds"),
                   len(mods))
-        mods.insert(at, {"mod_name": MOD, "mod_enabled": True})
+        mods.insert(at, {"mod_name": mod, "mod_enabled": on})
     with open(path, "w", encoding="utf-8") as f:
         json.dump(mods, f, indent=4)

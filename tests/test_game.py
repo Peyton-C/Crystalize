@@ -5,7 +5,7 @@ import struct
 
 import pytest
 
-from crystalize import game
+from crystalize import clawd, game
 
 SETTINGS = """\
 [General]
@@ -96,3 +96,46 @@ def test_unpacked_exe_passes(tmp_path):
     exe.write_bytes(pe([b".text", b".rdataE"]))
     assert not game.has_steamstub(str(exe))
 
+
+
+def lines(fuser):
+    return open(os.path.join(game.ue4ss_dir(str(fuser)), "Mods", "mods.txt")).read().splitlines()
+
+
+def test_crystalize_alone_leaves_clawd_out(fuser):
+    game.install(str(fuser))
+    assert not game.clawd_installed(str(fuser))
+    assert not any(line.startswith("Clawd") for line in lines(fuser))
+
+
+@pytest.fixture
+def pak(tmp_path):
+    path = tmp_path / "Clawd_P.pak"
+    path.write_bytes(b"pak" * 30000)  # over 64 KB, so the .sig has two chunks
+    return str(path)
+
+
+def test_clawd_on_and_off(fuser, pak):
+    g = str(fuser)
+    game.clawd_on(g, pak)
+    assert game.clawd_installed(g)
+    installed = os.path.join(game.mod_paks_dir(g), "Clawd_P")
+    assert open(installed + ".pak", "rb").read() == open(pak, "rb").read()
+    assert open(installed + ".sig", "rb").read() == clawd.signature(open(pak, "rb").read())
+    assert os.path.exists(os.path.join(game.ue4ss_dir(g), "Mods", "Clawd", "Scripts", "main.lua"))
+    assert "Clawd : 1" in lines(fuser)
+    assert lines(fuser).index("Clawd : 1") < lines(fuser).index("Keybinds : 0")
+    mods = json.load(open(os.path.join(game.ue4ss_dir(g), "Mods", "mods.json")))
+    assert {"mod_name": "Clawd", "mod_enabled": True} in mods
+
+    game.clawd_off(g)
+    assert not game.clawd_installed(g)
+    assert os.listdir(game.mod_paks_dir(g)) == []
+    assert not os.path.exists(os.path.join(game.ue4ss_dir(g), "Mods", "Clawd"))
+    assert "Clawd : 0" in lines(fuser)
+    game.clawd_off(g)  # twice is fine
+
+
+def test_clawd_needs_ue4ss(tmp_path, pak):
+    with pytest.raises(game.SetupError, match="UE4SS is not installed"):
+        game.clawd_on(str(tmp_path / "nofuser"), pak)

@@ -18,6 +18,11 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("mcp", help="run the MCP server over stdin and stdout")
     sub.add_parser("install", help="copy the mod into FUSER's UE4SS and check the setup")
     sub.add_parser("state", help="print what FUSER is playing, to test the connection")
+    clawd = sub.add_parser("clawd", help="put Clawd in headphones in place of FUSER's avatars, "
+                                         "or take him out")
+    clawd.add_argument("switch", choices=["on", "off"])
+    clawd.add_argument("--pak", help="with on, install this Clawd_P.pak rather than the released "
+                                     "one, to try a rebuild before publishing it")
     return parser
 
 
@@ -34,6 +39,24 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Installed the Crystalize mod into {game.ue4ss_dir(folder)}")
         for problem in problems:
             print(f"warning: {problem}", file=sys.stderr)
+        return 0
+
+    if args.command == "clawd":
+        from . import clawd
+        try:
+            if args.switch == "off":
+                game.clawd_off(folder)
+            else:
+                if args.pak:
+                    pak = args.pak
+                    print(f"Using {pak}, SHA-256 {clawd.sha256(pak)}, not the released Clawd")
+                else:
+                    pak = clawd.fetch()
+                game.clawd_on(folder, pak)
+        except (game.SetupError, clawd.ClawdError, OSError) as e:
+            print(f"crystalize: {e}", file=sys.stderr)
+            return 1
+        print(f"Clawd is {args.switch}. Restart FUSER for it to take effect")
         return 0
 
     bridge = Bridge(game.ipc_dir(folder))
