@@ -156,6 +156,8 @@ def test_set_state(ask):
     assert (done["name"], done["completed"], done["active"]) == ("Drop a {btType}", True, False)
     # false, not null: an answer of false must not fall through to the fallback
     assert (open_["completed"], open_["active"], open_["kind"]) == (False, True, "ShowGoalQuota")
+    # The song the set features for it, and none for a goal that features none
+    assert open_["song"] == "rockthecasbah" and "song" not in done
     assert state["freshness"] == {"value": 0.5, "min": 0, "max": 1}
     # The live meter, not the first one found, which sits frozen at its defaults
     assert state["crowd"] == {"CurHealth": 62, "MaxHealth": 100, "CurHealthState": 2,
@@ -177,6 +179,11 @@ def test_read_fields(ask):
                                  "fields": ["CurrentCrowdMeterState", "_label"]})
     assert body["result"] == {"CurrentCrowdMeterState": 1, "_label": "Crowd"}
     assert calls == []  # read only: nothing in the game is called
+
+
+def test_read_array(ask):
+    body, _ = ask("read", **{"class": "ShowPrompt", "fields": ["FeaturedSongs"]})
+    assert body["result"] == {"FeaturedSongs": ["CelSongSet /Game/Audio/Songs/rockthecasbah"]}
 
 
 def test_read_all(ask):

@@ -363,6 +363,24 @@ local function requests()
     return out
 end
 
+-- The song each goal of the set features, by the goal data's full name. A goal names it
+-- only as {RequiredSong}: the set lists its featured songs, and each section's config of a
+-- goal holds an index into that list
+local function featuredSongs()
+    local prompt = first("ShowFlowMgr")._curPrompt
+    local songs = items(prompt.FeaturedSongs)
+    local byGoal = {}
+    for _, section in ipairs(items(prompt.ShowSections)) do
+        for _, config in ipairs(items(section.GoalsThisSection)) do
+            local data, song = config.ShowGoalData, songs[config.FeaturedSongIndex + 1]
+            if valid(data) and valid(song) and not byGoal[data:GetFullName()] then
+                byGoal[data:GetFullName()] = song.songShortName:ToString()
+            end
+        end
+    end
+    return byGoal
+end
+
 -- Every goal this show has used, each marked whether it is up now. The active ones are a
 -- TMap, which UE4SS's Lua reads less surely than an array, so a failure there costs only
 -- the mark
@@ -376,6 +394,10 @@ local function goals()
         end)
         active = found
     end)
+    local ok, featured = pcall(featuredSongs)
+    if not ok then
+        featured = {}
+    end
     local out = array()
     for _, goal in ipairs(items(manager._allGoalsUsedThisShow)) do
         if valid(goal) then
@@ -400,6 +422,9 @@ local function goals()
                 entry.instrument = ask(data, "GetInstrument")
                 entry.disc_type = ask(data, "GetLoopType")
                 entry.years = ask(data, "GetYearRange")
+                if data.UseFeaturedSong then
+                    entry.song = featured[data:GetFullName()] or NULL
+                end
             end
             out[#out + 1] = entry
         end
@@ -471,20 +496,37 @@ function ops.set_state()
     return state
 end
 
+-- A value as read can report it: as is, or an object or text by its name
+local function readable(v)
+    if plain(v) ~= NULL then
+        return v
+    end
+    local named, s = pcall(function() return v:ToString() end)
+    if not named or type(s) ~= "string" then
+        named, s = pcall(function() return v:GetFullName() end)
+    end
+    return named and plain(s) or NULL
+end
+
 local function readFields(obj, fields)
     local out = {}
     for _, field in ipairs(fields or {}) do
         local ok, v = pcall(function() return obj[field] end)
+        local listed, list = false, nil
+        if ok and plain(v) == NULL then
+            -- A TArray, or a TMap's values, item by item: a featured song is one of these
+            listed, list = pcall(items, v)
+        end
         if not ok then
             out[field] = NULL
-        elseif plain(v) ~= NULL then
-            out[field] = v
-        else
-            local named, s = pcall(function() return v:ToString() end)
-            if not named then
-                named, s = pcall(function() return v:GetFullName() end)
+        elseif listed then
+            local named = array()
+            for i, item in ipairs(list) do
+                named[i] = readable(item)
             end
-            out[field] = named and plain(s) or NULL
+            out[field] = named
+        else
+            out[field] = readable(v)
         end
     end
     return out
@@ -492,7 +534,7 @@ end
 
 -- Fields of an object of a class, read and never written, and nothing called: for finding
 -- where FUSER keeps something without a restart for every guess. A field that is an object
--- or text comes back as its name. With all, every object of the class, each with its full
+-- or text comes back as its name, and an array as a list of them. With all, every object of the class, each with its full
 -- name, since the first one FindFirstOf finds can be a stale copy.
 function ops.read(args)
     if not args.all then

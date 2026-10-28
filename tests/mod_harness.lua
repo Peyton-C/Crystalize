@@ -76,9 +76,10 @@ local function tarrayOf(list)
     end }
 end
 
-local function goal(label, goalName, done)
+local function goal(label, goalName, done, featured)
     return object(label, {
-        _myGoalData = object(label .. " data", { GoalName = name(goalName), GoalDescription = name("") }),
+        _myGoalData = object(label .. " data", { GoalName = name(goalName), GoalDescription = name(""),
+            UseFeaturedSong = featured == true, GetFullName = function() return label .. " data" end }),
         GetFullName = function() return label end,
         GetClass = function() return { GetFName = function() return name("ShowGoalQuota") end } end,
         HasBeenCompleted = function() return done end,
@@ -87,7 +88,9 @@ local function goal(label, goalName, done)
     })
 end
 local doneGoal = goal("GoalBeat", "Drop a {btType}", true)
-local openGoal = goal("GoalBass", "Drop a {bsType}", false)
+local openGoal = goal("GoalBass", "Drop {bsGuitar} from \"{RequiredSong}\"", false, true)
+local casbah = object("Casbah", { songShortName = name("rockthecasbah"),
+    GetFullName = function() return "CelSongSet /Game/Audio/Songs/rockthecasbah" end })
 
 local synthRequest = object("SynthRequest", {
     PromptMessage = name("Some {Instrument} will make my day!"),
@@ -127,8 +130,17 @@ local world = {
         GetCurStatValue = function() return 0.5 end,
         GetMinValue = function() return 0 end, GetMaxValue = function() return 1 end,
     }) },
-    ShowFlowMgr = { object("ShowFlowMgr", { GetScore = function() return 1500 end }) },
+    -- The set features two songs, and the open goal's config points at the second
+    ShowFlowMgr = { object("ShowFlowMgr", { GetScore = function() return 1500 end,
+        _curPrompt = object("M_0030", {
+            FeaturedSongs = tarrayOf({ song, casbah }),
+            ShowSections = tarrayOf({ { GoalsThisSection = tarrayOf({
+                { ShowGoalData = doneGoal._myGoalData, FeaturedSongIndex = 0 },
+                { ShowGoalData = openGoal._myGoalData, FeaturedSongIndex = 1 },
+            }) } }),
+        }) }) },
     BP_Crowd_Manager_C = { object("Crowd", { CurrentCrowdMeterState = 1 }) },
+    ShowPrompt = { object("ShowPrompt", { FeaturedSongs = tarrayOf({ casbah }) }) },
     -- As in FUSER: a template comes first, frozen at its defaults; the one on screen was
     -- made at runtime
     WBP_ShowsCrowdMeter_C = {

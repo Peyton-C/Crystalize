@@ -42,7 +42,8 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `save_mix`, `load_mix`, `list_mixes` | Saves a plan under a name, gives it back to change, and lists them |
 | `play_mix` | Plays a plan or a saved mix, each step on its bar |
 | `stop_mix` | Stops the mix. The decks keep playing what they have |
-| `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck` | Act on the game at once, outside a plan |
+| `drop_disc`, `drop_queue` | Drop outside a plan, timed to the next downbeat as `play_mix` times a bar |
+| `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck` | Act on the game at once, outside a plan |
 
 A call with an argument its tool does not take is refused, and the error lists the arguments it does take.
 
@@ -102,10 +103,10 @@ A check is a warning, not a rule. The agent should fix it or know why it is keep
 ## Playing
 `play_mix` returns at once and plays in the background, sending each bar's steps together, timed to reach FUSER just after the bar's downbeat. FUSER plays them from the downbeat, and in a campaign set a drop timed this way counts as a drop on the downbeat. Set FUSER to quantize to cues and a drop waits for the track's next cue instead, which no plan can know, and custom songs often have none.
 
-When the decks are empty, bar 0 starts at once. When something is playing, bar 0 waits for the next downbeat, so the mix starts in phase with it. Decks the plan does not fill at bar 0 are emptied first, since the plan was checked as if they were. `get_state` shows the bar the mix is on. A disc dropped by hand during a mix stays until a step replaces it.
+When the decks are empty, bar 0 starts at once. When something is playing, bar 0 waits for the next downbeat, so the mix starts in phase with it. Decks the plan does not fill at bar 0 are emptied first, since the plan was checked as if they were. A deck already playing the disc bar 0 gives it keeps it rather than having it dropped again, and a key or tempo the session already has is not set again. `get_state` shows the bar the mix is on. A disc dropped by hand during a mix stays until a step replaces it.
 
 ## Campaign
-Crystalize plays campaign sets as it plays freestyle, and any disc in the library can be dropped, not only the set's crate. Drops, ejects and the rest count toward goals and crowd requests as if you had made them, and a drop `play_mix` makes counts as one on the downbeat.
+Crystalize plays campaign sets as it plays freestyle, and any disc in the library can be dropped, not only the set's crate. Drops, ejects and the rest count toward goals and crowd requests as if you had made them, and a drop `play_mix`, `drop_disc` or `drop_queue` makes counts as one on the downbeat. To change one deck, use `drop_disc`: it waits for the next downbeat, up to a bar, and returns once the drop is sent. A plan that repeats the other decks' discs at bar 0 keeps them, so the crowd does not count them as repeats.
 
 `get_set` reports the set as FUSER keeps it:
 
@@ -126,7 +127,7 @@ Crystalize plays campaign sets as it plays freestyle, and any disc in the librar
 
 The meter drains about 1 a second once 6 seconds pass without an action, and a good action adds 3. A bad one takes 4, and so do a missed request and a missed goal. FUSER remembers the last 3 discs and counts more than 3 actions in 6 bars as too much, so keep it fed with one fresh disc every few bars rather than many at once.
 
-A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "Include 2+ {Genre} discs". Disc types are filled in, so "Drop a {btType}" reads "Drop a beat (blue)".
+A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "Include 2+ {Genre} discs". Disc types, instruments and the song a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)" and "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah".
 
 ## Tempo range
 FUSER allows 90 to 157 BPM. FuserSongLoader builds from May 2026 on widen it to 60 to 200. Crystalize reads the range from the game, so plans are checked against whichever you have.

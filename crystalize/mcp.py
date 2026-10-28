@@ -188,8 +188,9 @@ TOOLS = [
     },
     {
         "name": "drop_disc",
-        "description": "Play a disc on a deck now, replacing what it held. It lands on the next "
-                       "bar. With `queue`, it waits on the deck until drop_queue.",
+        "description": "Play a disc on a deck, replacing what it held, from the next bar. "
+                       "Returns once it is sent, up to a bar later. With `queue`, it waits on "
+                       "the deck until drop_queue.",
         "inputSchema": {
             "type": "object",
             "properties": {"disc": {"type": "string", "description": "A disc name"},
@@ -199,7 +200,7 @@ TOOLS = [
     },
     {
         "name": "drop_queue",
-        "description": "Drop every queued disc at once.",
+        "description": "Drop every queued disc together, from the next bar.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -505,11 +506,15 @@ class Server:
             # A goal the show has used is up unless it is done; the mod's active mark is
             # null when it cannot read FUSER's map of active goals
             goals, done = [], 0
+            titles = {}
+            if any(g.get("song") for g in raw["goals"]):
+                titles = {song["id"]: song["title"] for song in self._library()}
             for g in raw["goals"]:
                 if g.get("completed") is True or g.get("active") is False:
                     done += g.get("completed") is True
                     continue
-                entry = {"goal": music.goal_text(g.get("name")) or g.get("description"),
+                entry = {"goal": music.goal_text(g.get("name"), titles.get(g.get("song"), g.get("song")))
+                         or g.get("description"),
                          "done": g.get("performed"), "of": g.get("required")}
                 if g.get("bars"):
                     entry["bars"], entry["bars_done"] = g["bars"], g.get("completed_bars")
@@ -653,7 +658,12 @@ class Server:
             raise GameError(f"{disc} is from {known['song']}, DLC you do not own, and would "
                             f"play silence. search_songs lists only songs you own")
         try:
-            self.bridge.call("drop", name=disc, deck=_deck(args), queue=bool(args.get("queue")))
+            drop = {"name": disc, "deck": _deck(args), "queue": bool(args.get("queue"))}
+            if drop["queue"]:
+                self.bridge.call("drop", **drop)
+            else:
+                # Timed as play_mix times its bars, so the campaign counts it on the downbeat
+                self.player.on_downbeat([("drop", drop)])
         except GameError as e:
             if "no disc named" in str(e):
                 raise GameError(f"FUSER has no disc named {disc}, search_songs lists them") from e
@@ -662,7 +672,7 @@ class Server:
                 "queued": bool(args.get("queue"))}
 
     def _tool_drop_queue(self, args: dict) -> dict:
-        self.bridge.call("drop_queue")
+        self.player.on_downbeat([("drop_queue", {})])
         return {"dropped": True}
 
     def _tool_eject(self, args: dict) -> dict:

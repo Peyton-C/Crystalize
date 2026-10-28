@@ -39,6 +39,10 @@ YEAR_RANGES = (None, "1600s", "1700s", "1800s") + tuple(f"{y}s" for y in range(1
 # their short names, the end of every disc's name; the rest the mod cannot read yet
 GOAL_PLACEHOLDERS = {"{btType}": "beat (blue)", "{bsType}": "bass (green)",
                      "{lpType}": "loop (yellow)", "{ldType}": "lead (red)"}
+DISC_TYPE_WORDS = {"bt": "beat (blue)", "bs": "bass (green)", "lp": "loop (yellow)",
+                   "ld": "lead (red)"}
+# A disc type and an instrument, as in {lpGuitar}: a guitar loop
+_TYPED_INSTRUMENT = re.compile(r"\{(bt|bs|lp|ld)([A-Z]\w*)\}")
 
 # EInstrument values that sing. A lead disc with no instrument counts too, since most are
 VOCALS = {"Vocal", "Female Vocals", "Male Vocals", None}
@@ -199,10 +203,15 @@ def request_wants(f: dict | None) -> str | None:
     return None
 
 
-def goal_text(name: str | None) -> str | None:
-    """A goal's name with the placeholders filled that can be."""
+def goal_text(name: str | None, song: str | None = None) -> str | None:
+    """A goal's name with the placeholders filled that can be, `song` being the title of
+    the song it features."""
     if not name:
         return name
     for placeholder, words in GOAL_PLACEHOLDERS.items():
         name = name.replace(placeholder, words)
+    name = _TYPED_INSTRUMENT.sub(
+        lambda m: f"{m[2].lower()} {DISC_TYPE_WORDS[m[1]]}", name)
+    if song:
+        name = name.replace("{RequiredSong}", song)
     return name

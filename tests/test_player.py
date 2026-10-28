@@ -12,8 +12,9 @@ from crystalize.player import Player
 class ClockBridge:
     """FUSER as the player sees it: a clock, a state, and a record of what it was told."""
 
-    def __init__(self, beat=0.0, playing=(None, None, None, None)):
+    def __init__(self, beat=0.0, playing=(None, None, None, None), bpm=100):
         self.beat = beat
+        self.bpm = bpm  # the session's, which bar 0's set_tempo changes unless it is 120
         self.sent = []  # (beat when sent, op, args)
         self.playing = list(playing)
         self.requests = []  # the ops of each request that changed something
@@ -25,7 +26,8 @@ class ClockBridge:
             if op == "clock":
                 return {"beat": self.beat, "bpm": 120}
             if op == "state":
-                return {"decks": [{"playing": p} for p in self.playing]}
+                return {"key": 0, "mode": 0, "bpm": self.bpm,
+                        "decks": [{"playing": p} for p in self.playing]}
             commands = [(c["op"], c["args"]) for c in args["commands"]] if op == "batch" \
                 else [(op, args)]
             if any(o == self.fail_on for o, _ in commands):
@@ -197,3 +199,46 @@ def test_error_stops_and_is_reported():
     fuser.to(16.0)  # bar 4, whose eject fails
     wait_until(lambda: not p.status()["playing"])
     assert p.status()["error"] == "FUSER is not answering"
+
+
+def test_a_deck_already_playing_its_opening_disc_keeps_it():
+    # Dropped again, the campaign counts it as a repeat and an action too many
+    fuser = ClockBridge(beat=13.5, playing=("abt", None, None, None), bpm=120)
+    p = Player(fuser)
+    p.start("test", SCHEDULE, 6, {0})
+    wait_until(lambda: p.status().get("started_beat") is not None)
+    fuser.to(16.0)
+    fuser.to(24.0)
+    wait_until(lambda: len(fuser.sent) == 1)
+    assert fuser.sent[0][1:] == ("drop", {"name": "bbs", "deck": 1, "queue": False})
+    p.stop()
+
+
+def test_a_different_opening_disc_still_drops():
+    fuser = ClockBridge(beat=13.5, playing=("old", None, None, None))
+    p = Player(fuser)
+    p.start("test", SCHEDULE, 6, {0})
+    fuser.to(16.0)
+    wait_until(lambda: len(fuser.sent) == 2)
+    assert fuser.requests == [["drop", "set_tempo"]]
+    p.stop()
+
+
+def test_on_downbeat_waits_for_the_next_bar():
+    fuser = ClockBridge(beat=13.5, playing=("x", None, None, None))
+    p = Player(fuser)
+    drop = ("drop", {"name": "bbs", "deck": 1, "queue": False})
+    sender = threading.Thread(target=p.on_downbeat, args=([drop],))
+    sender.start()
+    time.sleep(0.02)
+    assert fuser.sent == []
+    fuser.to(15.95)  # 25 ms before beat 16, inside SETTLE_SECONDS
+    sender.join(2)
+    assert not sender.is_alive()
+    assert fuser.sent == [(15.95, "drop", drop[1])]
+
+
+def test_on_downbeat_with_nothing_playing_goes_at_once():
+    fuser = ClockBridge(beat=13.5)
+    Player(fuser).on_downbeat([("drop_queue", {})])
+    assert fuser.requests == [["drop_queue"]]

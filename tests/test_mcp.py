@@ -65,10 +65,12 @@ class FakeBridge:
         self.fail = {}  # op -> the error FUSER gives for it
 
     def call(self, op, **args):
+        if op == "batch":
+            return [self.call(c["op"], **c["args"]) for c in args["commands"]]
         self.calls.append((op, args))
         if op in self.fail:
             raise GameError(self.fail[op])
-        return {"discs": DISCS, "state": STATE, "clock": {"beat": 0.0},
+        return {"discs": DISCS, "state": STATE, "clock": {"beat": 3.98, "bpm": 120},
                 "set_state": SET_STATE}.get(op, {})
 
     def ops(self):
@@ -322,6 +324,23 @@ def test_drop_converts_deck(talk, fake):
     assert result["disc"]["song"] == "Mr. Brightside"
 
 
+def test_drop_waits_for_the_downbeat(talk, fake):
+    # Deck 1 is playing, so the drop is timed to the next bar rather than sent at once
+    call(talk, "drop_disc", disc="mrbrightsidebs", deck=4)
+    assert fake.ops()[-3:] == ["state", "clock", "drop"]
+
+
+def test_queue_goes_at_once(talk, fake):
+    call(talk, "drop_disc", disc="mrbrightsidebs", deck=4, queue=True)
+    assert fake.ops()[-1] == "drop" and "clock" not in fake.ops()
+    assert fake.calls[-1] == ("drop", {"name": "mrbrightsidebs", "deck": 3, "queue": True})
+
+
+def test_drop_queue_waits_for_the_downbeat(talk, fake):
+    _, failed = call(talk, "drop_queue")
+    assert not failed and fake.ops() == ["state", "clock", "drop_queue"]
+
+
 def test_unowned_dlc_is_refused(talk, fake):
     text, failed = call(talk, "drop_disc", disc="kingsandqueensld", deck=1)
     assert failed and "do not own" in text and "Kings and Queens" in text
@@ -358,7 +377,6 @@ def test_set_key_rejects(talk, fake, text):
 
 
 @pytest.mark.parametrize("name, args, op, sent", [
-    ("drop_queue", {}, "drop_queue", {}),
     ("set_tempo", {"bpm": 128}, "set_tempo", {"bpm": 128}),
     ("mute_deck", {"deck": 2, "mute": True}, "mute", {"deck": 1, "on": True}),
     ("solo_deck", {"deck": 1, "solo": False}, "solo", {"deck": 0, "on": False}),
@@ -413,6 +431,22 @@ def test_request_wants(f, words):
 def test_goal_text_fills_disc_types():
     from crystalize import music
     assert music.goal_text("Drop a {bsType}") == "Drop a bass (green)"
+
+
+def test_goal_text_fills_instruments_and_the_song():
+    from crystalize import music
+    assert music.goal_text('Drop {lpGuitar} from "{RequiredSong}"', "Rock the Casbah") == \
+        'Drop guitar loop (yellow) from "Rock the Casbah"'
+    assert music.goal_text("Smart {Transition} using only {Horns}") == \
+        "Smart {Transition} using only {Horns}"  # not a disc type and instrument
+
+
+def test_get_set_names_the_featured_song(talk, monkeypatch):
+    goal = {"name": 'Drop {bsGuitar} from "{RequiredSong}"', "song": "mrbrightside",
+            "performed": 0, "required": 1, "completed": False, "active": True}
+    monkeypatch.setitem(SET_STATE, "goals", [goal])
+    result, _ = call(talk, "get_set")
+    assert result["goals"][0]["goal"] == 'Drop guitar bass (green) from "Mr. Brightside"'
 
 
 def test_get_set_hides_the_meter_before_it_is_on(talk, monkeypatch):

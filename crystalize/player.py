@@ -74,6 +74,23 @@ class Player:
         trip = time.monotonic() - asked
         return clock["beat"], max(clock.get("bpm") or 0, 1) / 60, trip
 
+    def on_downbeat(self, commands) -> None:
+        """Send `commands` in one request, timed as a bar of a mix is to reach FUSER just
+        after the next downbeat, and return once they are sent. With nothing playing there
+        is no bar to keep in phase with, so they go at once."""
+        state = self.bridge.call("state")
+        if not any(held and held.get("playing") for held in state["decks"]):
+            self._send(commands)
+            return
+        beat, per_second, trip = self._clock()
+        downbeat = _next_downbeat(beat, per_second, trip)
+        while (wait := _wait(downbeat, beat, per_second, trip)) >= SETTLE_SECONDS:
+            time.sleep(POLL_SECONDS)
+            beat, per_second, trip = self._clock()
+        if wait > 0:
+            time.sleep(wait)
+        self._send(commands)
+
     def _run(self, schedule, end_bar, opening_decks, stop) -> None:
         try:
             state = self.bridge.call("state")
@@ -84,6 +101,12 @@ class Player:
 
             beat, per_second, trip = self._clock()
             pending = list(schedule)
+            if playing and pending and pending[0][0] == 0:
+                # A deck already playing its opening disc keeps it: dropped again, the
+                # campaign counts it as a repeat and as one action too many at once.
+                # The same goes for a key or tempo the session already has
+                held = [d and d.get("playing") for d in state["decks"]]
+                pending[0] = (0, [c for c in pending[0][1] if not _unchanged(c, state, held)])
             if not playing:
                 # Nothing to keep in phase with, so bar 0 goes out at once and starts the
                 # music where the clock stands
@@ -93,7 +116,7 @@ class Player:
             else:
                 # Bar 0 waits for a downbeat like any other, so it lands in phase with what
                 # is playing: the first one a command sent now can still reach
-                start = math.floor((beat + trip * per_second) / BEATS_PER_BAR + 1) * BEATS_PER_BAR
+                start = _next_downbeat(beat, per_second, trip)
             self._update(bar=0, started_beat=start)
 
             last = beat
@@ -111,9 +134,7 @@ class Player:
                              next_bar=pending[0][0] if pending else None)
                 if pending:
                     downbeat = start + pending[0][0] * BEATS_PER_BAR
-                    # How long to wait before sending, for the steps to arrive on time.
-                    # Below zero the bar is late, after a stall, and goes out at once
-                    wait = (downbeat - beat) / per_second + ARRIVE_SECONDS - trip
+                    wait = _wait(downbeat, beat, per_second, trip)
                     if wait < SETTLE_SECONDS:
                         if wait > 0 and stop.wait(wait):
                             break
@@ -128,4 +149,28 @@ class Player:
             self._update(playing=False)
 
     def _send(self, commands) -> None:
+        if not commands:
+            return
         self.bridge.call("batch", commands=[{"op": op, "args": args} for op, args in commands])
+
+
+def _next_downbeat(beat: float, per_second: float, trip: float) -> int:
+    """The first downbeat a command sent now can still reach."""
+    return math.floor((beat + trip * per_second) / BEATS_PER_BAR + 1) * BEATS_PER_BAR
+
+
+def _wait(downbeat: float, beat: float, per_second: float, trip: float) -> float:
+    """How long to wait before sending, for a command to arrive on time at `downbeat`.
+    Below zero it is late, after a stall, and goes out at once."""
+    return (downbeat - beat) / per_second + ARRIVE_SECONDS - trip
+
+
+def _unchanged(command, state: dict, held: list) -> bool:
+    op, args = command
+    if op == "drop":
+        return held[args["deck"]] == args["name"]
+    if op == "set_key":
+        return (state.get("key"), state.get("mode")) == (args["key"], args["mode"])
+    if op == "set_tempo":
+        return state.get("bpm") == args["bpm"]
+    return False
