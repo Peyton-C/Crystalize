@@ -619,3 +619,10 @@ def test_pickup_drop_needs_pickups(talk, fake):
     # The fixture's discs carry none, as some older custom songs do
     text, failed = call(talk, "drop_disc", disc="mrbrightsidebs", deck=1, on_pickup=True)
     assert failed and "no pickups" in text and "drop" not in fake.ops()
+
+
+def test_goal_text_says_only_means_the_whole_mix():
+    from crystalize import music
+    assert music.goal_text("Include only 1 {btType}") == "Include only 1 disc, a beat (blue)"
+    assert music.goal_text("Include only 2 {lpType}") == "Include only 2 discs, all loop (yellow)"
+    assert music.goal_text("Include only 3 discs") == "Include only 3 discs"

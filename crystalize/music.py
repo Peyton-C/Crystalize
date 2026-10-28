@@ -44,6 +44,7 @@ GOAL_PLACEHOLDERS = {"{btType}": "beat (blue)", "{bsType}": "bass (green)",
                      "{lpType}": "loop (yellow)", "{ldType}": "lead (red)"}
 DISC_TYPE_WORDS = {"bt": "beat (blue)", "bs": "bass (green)", "lp": "loop (yellow)",
                    "ld": "lead (red)"}
+_ONLY_TYPE = re.compile(r"Include only (\d+) \{(bt|bs|lp|ld)Type\}")
 # A disc type and an instrument, as in {lpGuitar}: a guitar loop
 _TYPED_INSTRUMENT = re.compile(r"\{(bt|bs|lp|ld)([A-Z]\w*)\}")
 
@@ -215,6 +216,10 @@ def goal_text(name: str | None, song: str | None = None,
     the song it features and `filters` the FCelFilters it counts discs by."""
     if not name:
         return name
+    # "Include only 1 {btType}" means one disc in all, a beat, not one beat among others,
+    # and it tripped up a player as well as the agent
+    name = _ONLY_TYPE.sub(lambda m: f"Include only {m[1]} disc{'' if m[1] == '1' else 's'}, "
+                          f"{'a ' if m[1] == '1' else 'all '}{{{m[2]}Type}}", name)
     for f in filters or []:
         if f.get("type") == 1 and _named(INSTRUMENTS, f.get("instrument")):
             name = name.replace("{Instrument}", _named(INSTRUMENTS, f["instrument"]))
