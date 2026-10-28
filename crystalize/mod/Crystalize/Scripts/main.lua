@@ -88,7 +88,7 @@ end
 local function first(class)
     local obj = FindFirstOf(class)
     if not valid(obj) then
-        error(class .. " not found, open a freestyle session first", 0)
+        error(class .. " not found, open a freestyle session or a campaign set first", 0)
     end
     return obj
 end
@@ -290,6 +290,218 @@ end
 function ops.solo(args)
     first("AudioController"):NetSoloTrack(checkDeck(args.deck), args.on == true)
     return { deck = args.deck, on = args.on == true }
+end
+
+-- A number, boolean or string as is. Anything else, such as a struct a UFunction hands back,
+-- would stop the response encoding, so it is reported as null
+local function plain(v)
+    local t = type(v)
+    if t == "number" or t == "boolean" or t == "string" then
+        return v
+    end
+    return NULL
+end
+
+-- A UFunction's answer, or null if calling it fails
+local function ask(obj, method)
+    local ok, v = pcall(function() return obj[method](obj) end)
+    -- Not "ok and plain(v) or NULL", which turns an answer of false into null
+    if ok then
+        return plain(v)
+    end
+    return NULL
+end
+
+-- A TArray's items. UE4SS hands each to ForEach wrapped, and get() unwraps it
+local function items(arr)
+    local out = {}
+    arr:ForEach(function(_, item)
+        out[#out + 1] = item:get()
+    end)
+    return out
+end
+
+local function shortNames(arr, field)
+    local out = array()
+    for _, obj in ipairs(items(arr)) do
+        if valid(obj) then
+            out[#out + 1] = obj[field]:ToString()
+        end
+    end
+    return out
+end
+
+-- Every crowd request this show has scheduled, active or settled; the server picks
+local function requests()
+    local out = array()
+    for _, timing in ipairs(items(first("RequestMgr")._requests)) do
+        local entry = {
+            id = plain(timing.uniqueRequestId),
+            state = plain(timing.State),
+            start_measure = plain(timing.RequestStartMeasure),
+            bars = plain(timing.AvailabilityDurationInBars),
+            procedural = plain(timing.ProceduralRequests),
+        }
+        local request = timing.MyRequest
+        if valid(request) then
+            local filter = request.RequestCelFilter
+            entry.prompt = text(request.PromptMessage)
+            entry.filter = {
+                type = plain(filter.FilterTo),
+                disc_type = plain(filter.LoopType),
+                instrument = plain(filter.instrument),
+                genre = plain(filter.Genre),
+                years = plain(filter.YearRange),
+            }
+            local ok, songs = pcall(shortNames, filter.songs, "songShortName")
+            entry.filter.songs = ok and songs or NULL
+            local ok_c, discs = pcall(shortNames, filter.Cels, "shortName")
+            entry.filter.discs = ok_c and discs or NULL
+        end
+        out[#out + 1] = entry
+    end
+    return out
+end
+
+-- Every goal this show has used, each marked whether it is up now. The active ones are a
+-- TMap, which UE4SS's Lua reads less surely than an array, so a failure there costs only
+-- the mark
+local function goals()
+    local manager = first("ShowGoalsMgr")
+    local active
+    pcall(function()
+        local found = {}
+        manager._currentlyActiveGoals:ForEach(function(_, goal)
+            found[goal:get():GetFullName()] = true
+        end)
+        active = found
+    end)
+    local out = array()
+    for _, goal in ipairs(items(manager._allGoalsUsedThisShow)) do
+        if valid(goal) then
+            local data = goal._myGoalData
+            local entry = {
+                kind = goal:GetClass():GetFName():ToString(),
+                active = NULL,
+                completed = ask(goal, "HasBeenCompleted"),
+                progress = ask(goal, "GetProgressTowardsCompletion"),
+                performed = ask(goal, "GetNumTimesPerformed"),
+                required = ask(goal, "GetRequiredNumActions"),
+                bars = ask(goal, "GetDurationInBars"),
+                completed_bars = ask(goal, "GetTotalCompletedBars"),
+            }
+            if active then
+                entry.active = active[goal:GetFullName()] == true
+            end
+            if valid(data) then
+                entry.name = text(data.GoalName)
+                entry.description = text(data.GoalDescription)
+                entry.genre = ask(data, "GetGenre")
+                entry.instrument = ask(data, "GetInstrument")
+                entry.disc_type = ask(data, "GetLoopType")
+                entry.years = ask(data, "GetYearRange")
+            end
+            out[#out + 1] = entry
+        end
+    end
+    return out
+end
+
+-- The campaign layer: crowd requests, goals, the crowd meter and the score. Each part is
+-- read on its own, so one that fails leaves the rest, and the failures are listed: in
+-- freestyle there are none of them to find.
+function ops.set_state()
+    local state = { problems = array() }
+    local function try(field, read)
+        local ok, result = pcall(read)
+        if ok then
+            state[field] = result
+        else
+            state[field] = NULL
+            state.problems[#state.problems + 1] = field .. ": " .. tostring(result)
+        end
+    end
+    try("measure", function() return first("HypeAudio"):GetCurrentMeasure(RAW) end)
+    try("requests", requests)
+    try("goals", goals)
+    -- How fresh the mix is, which rises on a new drop and fades while nothing changes. It
+    -- is not the crowd meter, though it looked like one: it read 0 with the meter halfway
+    try("freshness", function()
+        local stat = first("SkillStat_Freshness")
+        return {
+            value = ask(stat, "GetCurStatValue"),
+            min = ask(stat, "GetMinValue"),
+            max = ask(stat, "GetMaxValue"),
+        }
+    end)
+    -- The crowd meter has no C++ home the dump shows: its widget, a Blueprint, keeps the
+    -- health and the rules that move it. Freshness and the VFX manager's CrowdMeterPercent
+    -- both looked like it and did not follow the screen
+    try("crowd", function()
+        local widget = first("WBP_ShowsCrowdMeter_C")
+        local out = {}
+        for _, field in ipairs({ "CurHealth", "MaxHealth", "CurHealthState", "WarningCount" }) do
+            local ok, v = pcall(function() return widget[field] end)
+            out[field] = ok and plain(v) or NULL
+        end
+        return out
+    end)
+    try("show", function()
+        local flow = first("ShowFlowMgr")
+        return {
+            score = ask(flow, "GetScore"),
+            section = ask(flow, "GetCurrentShowSectionIndex"),
+            section_progress = ask(flow, "GetCurrentSectionProgress"),
+            last_section = ask(flow, "IsInLastSection"),
+            has_meter = ask(flow, "DoesCurrentSectionHaveCrowdMeter"),
+        }
+    end)
+    return state
+end
+
+-- Fields of the first object of a class, read and never written, and nothing called: for
+-- finding where FUSER keeps something without a restart for every guess. A field that is
+-- an object or text comes back as its name.
+function ops.read(args)
+    local obj = first(args.class)
+    local out = {}
+    for _, field in ipairs(args.fields or {}) do
+        local ok, v = pcall(function() return obj[field] end)
+        if not ok then
+            out[field] = NULL
+        elseif plain(v) ~= NULL then
+            out[field] = v
+        else
+            local named, s = pcall(function() return v:ToString() end)
+            if not named then
+                named, s = pcall(function() return v:GetFullName() end)
+            end
+            out[field] = named and plain(s) or NULL
+        end
+    end
+    return out
+end
+
+-- Several commands in one request, run in order on one frame. A bar's drops have to reach
+-- FUSER within a tenth of a beat or so of its downbeat to count as on it, and a round trip
+-- each put a bar's fourth drop a third of a beat behind its first.
+function ops.batch(args)
+    local commands = args.commands or {}
+    -- Checked before any runs, so a misspelt command does not leave half a bar played
+    for i, command in ipairs(commands) do
+        if not ops[command.op] or command.op == "batch" then
+            error("command " .. i .. " of the batch, " .. tostring(command.op) .. ", is unknown", 0)
+        end
+    end
+    local results = array()
+    for i, command in ipairs(commands) do
+        local ok, result = pcall(ops[command.op], command.args or {})
+        if not ok then
+            error(command.op .. ", command " .. i .. " of the batch: " .. tostring(result), 0)
+        end
+        results[i] = result
+    end
+    return results
 end
 
 ------------------------------------------------------------------------------- ipc

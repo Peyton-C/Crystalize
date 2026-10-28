@@ -68,6 +68,19 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "get_set",
+        "description": "In a campaign set: the measure FUSER is on, the open crowd requests "
+                       "with what each wants and the measure it ends on, the goals not yet "
+                       "done with their progress, how many of each are settled, whether the "
+                       "section has a crowd meter, the meter from 0 to 100 and its band (low, "
+                       "medium, high, peak) and warnings, the "
+                       "mix's freshness from 0 to 100, which a new drop raises and a still "
+                       "stretch lets fade, and the score. Measures are FUSER's own, not a "
+                       "mix's bars. A goal's text may keep a placeholder such as {Genre} the "
+                       "mod cannot read yet.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "search_songs",
         "description": "Search the songs you can play, custom songs included and DLC you do "
                        "not own left out. Returns the total that match and up to `limit` of "
@@ -162,7 +175,8 @@ TOOLS = [
         "name": "play_mix",
         "description": "Play a saved mix or a plan in FUSER, each step on its bar, stopping any "
                        "mix already playing. Decks the plan does not fill at bar 0 are emptied "
-                       "first. Returns at once; get_state follows it. Needs a freestyle session.",
+                       "first. Returns at once; get_state follows it. Needs a freestyle session or a "
+                       "campaign set.",
         "inputSchema": {"type": "object", "properties": {
             **PLAN, "mix": {"type": "string", "description": "A saved mix, in place of a plan"},
         }},
@@ -462,6 +476,68 @@ class Server:
         mix = self.player.status()
         if mix:
             result["mix"] = {k: v for k, v in mix.items() if k != "started_beat" and v is not None}
+        return result
+
+    def _tool_get_set(self, args: dict) -> dict:
+        raw = self.bridge.call("set_state")
+        measure = raw.get("measure")
+        result: dict = {"measure": measure}
+
+        if raw.get("requests") is not None:
+            open_, settled = [], {"passed": 0, "failed": 0}
+            for r in raw["requests"]:
+                state = music._named(music.REQUEST_STATES, r.get("state"))
+                if state not in music.OPEN_REQUESTS:
+                    if state in settled:
+                        settled[state] += 1
+                    continue
+                start, bars = r.get("start_measure"), r.get("bars")
+                ends = start + bars if isinstance(start, int) and isinstance(bars, int) else None
+                entry = {"state": state, "wants": music.request_wants(r.get("filter")),
+                         "starts": start, "ends": ends}
+                if state == "active" and ends is not None and isinstance(measure, int):
+                    entry["measures_left"] = ends - measure
+                open_.append({k: v for k, v in entry.items() if v is not None})
+            result["requests"] = open_
+            result["requests_settled"] = settled
+
+        if raw.get("goals") is not None:
+            # A goal the show has used is up unless it is done; the mod's active mark is
+            # null when it cannot read FUSER's map of active goals
+            goals, done = [], 0
+            for g in raw["goals"]:
+                if g.get("completed") is True or g.get("active") is False:
+                    done += g.get("completed") is True
+                    continue
+                entry = {"goal": music.goal_text(g.get("name")) or g.get("description"),
+                         "done": g.get("performed"), "of": g.get("required")}
+                if g.get("bars"):
+                    entry["bars"], entry["bars_done"] = g["bars"], g.get("completed_bars")
+                goals.append({k: v for k, v in entry.items() if v is not None})
+            result["goals"] = goals
+            result["goals_done"] = done
+
+        show = raw.get("show") or {}
+        if show.get("has_meter") is not None:
+            result["crowd_meter_on"] = show["has_meter"]
+        crowd = raw.get("crowd") or {}
+        health, most = crowd.get("CurHealth"), crowd.get("MaxHealth")
+        if isinstance(health, (int, float)) and isinstance(most, (int, float)) and most > 0:
+            result["crowd_meter"] = round(health / most * 100)
+        band = music._named(music.CROWD_STATES, crowd.get("CurHealthState"))
+        if band:
+            result["crowd"] = band
+        if crowd.get("WarningCount"):
+            result["crowd_warnings"] = crowd["WarningCount"]
+        fresh = raw.get("freshness") or {}
+        low, high, value = fresh.get("min"), fresh.get("max"), fresh.get("value")
+        if all(isinstance(v, (int, float)) for v in (low, high, value)) and high > low:
+            result["freshness"] = round((value - low) / (high - low) * 100)
+        if show.get("score") is not None:
+            result["score"] = show["score"]
+        if raw.get("problems"):
+            # Said rather than hidden, so a part FUSER moved shows up as missing, not empty
+            result["unreadable"] = raw["problems"]
         return result
 
     def _tool_search_songs(self, args: dict) -> dict:

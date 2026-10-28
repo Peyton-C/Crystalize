@@ -22,5 +22,8 @@ The mod's commands are thin wrappers over FUSER's own functions. The server turn
 | `set_key` | `AudioController.NetSetKeyMode`, then `NetSetKey` |
 | `set_tempo` | `AudioController.NetSetTempo` |
 | `mute`, `solo` | `AudioController.NetMuteTrack`, `NetSoloTrack` |
+| `set_state` | `RequestMgr._requests` for crowd requests, `ShowGoalsMgr` for goals, `SkillStat_Freshness` for freshness, the crowd meter from its widget, `WBP_ShowsCrowdMeter_C`, and `ShowFlowMgr.GetScore`. Each part is read on its own, and the ones that fail are listed |
+| `read` | Named fields of the first object of a class, read without calling anything, to look for where FUSER keeps something |
+| `batch` | Several of the above in order, on one frame. A bar's steps go as one, so they all reach FUSER within the window that counts as on the downbeat |
 
-The `Net` functions are FUSER's multiplayer calls. In freestyle the player is the host, so they run locally.
+The `Net` functions are FUSER's multiplayer calls. In freestyle and the campaign the player is the host, so they run locally.

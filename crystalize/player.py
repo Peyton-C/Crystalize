@@ -1,24 +1,29 @@
 """Plays a mix on FUSER's beat clock, so an agent never has to time a tool call to a bar.
 
-FUSER quantizes a drop to the next beat, half bar or bar, as the player has it set, or
-to cues a track defines. A bar's downbeat is all three of the first, so each bar's steps
-are sent within the last beat before it, and land on the bar whichever is set. Cues
-cannot be planned for. Bars are four beats: every song in FUSER is in 4/4.
+Each bar's steps go to FUSER in one request, timed to reach it just after the bar's
+downbeat. FUSER plays a drop that arrives there from the downbeat, and the campaign counts
+it as a drop on the downbeat. Bars are four beats: every song in FUSER is in 4/4.
 """
 from __future__ import annotations
 
 import math
 import threading
+import time
 
 from .bridge import GameError
 
 BEATS_PER_BAR = 4
 
-# How early a bar's steps are sent, in beats. Under 1, so beat quantization still takes
-# the downbeat and not the beat before it. A quarter beat is left on that side for clock
-# jitter, and the rest is for the trip to the game thread: the poll here, the mod's 50 ms
-# poll and a frame, which three quarters of a beat covers even at 200 BPM, 225 ms
-FIRE_AHEAD_BEATS = 0.75
+# When a bar's steps should reach FUSER, in seconds after its downbeat. In the campaign a
+# drop counted as on the downbeat when it arrived from about 25 ms before to at least 75 ms
+# after, at 120 BPM. One sent half a beat or more early still sounded on the downbeat, by
+# quantization, but did not count, which is why the player no longer sends ahead. This is
+# the middle of what counted, leaving room for a slow round trip either way.
+ARRIVE_SECONDS = 0.025
+
+# Once a bar is this close, the player stops polling and sleeps out the rest on the tempo:
+# a poll and a round trip together can pass a fifth of a beat, more than the window allows
+SETTLE_SECONDS = 0.25
 
 POLL_SECONDS = 0.05
 
@@ -60,6 +65,15 @@ class Player:
         with self._lock:
             self._status.update(fields)
 
+    def _clock(self) -> tuple[float, float, float]:
+        """The beat, FUSER's beats per second, and how long asking took. The beat was read
+        about half that time ago, and a command sent now arrives about half of it later,
+        so one sent now reaches FUSER near `beat + trip * per_second`."""
+        asked = time.monotonic()
+        clock = self.bridge.call("clock")
+        trip = time.monotonic() - asked
+        return clock["beat"], max(clock.get("bpm") or 0, 1) / 60, trip
+
     def _run(self, schedule, end_bar, opening_decks, stop) -> None:
         try:
             state = self.bridge.call("state")
@@ -68,7 +82,7 @@ class Player:
                 if deck not in opening_decks:
                     self.bridge.call("eject", deck=deck)
 
-            beat = self.bridge.call("clock")["beat"]
+            beat, per_second, trip = self._clock()
             pending = list(schedule)
             if not playing:
                 # Nothing to keep in phase with, so bar 0 goes out at once and starts the
@@ -78,13 +92,13 @@ class Player:
                     self._send(pending.pop(0)[1])
             else:
                 # Bar 0 waits for a downbeat like any other, so it lands in phase with what
-                # is playing: the first one far enough off to send ahead of
-                start = math.floor((beat + FIRE_AHEAD_BEATS) / BEATS_PER_BAR + 1) * BEATS_PER_BAR
+                # is playing: the first one a command sent now can still reach
+                start = math.floor((beat + trip * per_second) / BEATS_PER_BAR + 1) * BEATS_PER_BAR
             self._update(bar=0, started_beat=start)
 
             last = beat
             while not stop.is_set():
-                beat = self.bridge.call("clock")["beat"]
+                beat, per_second, trip = self._clock()
                 if beat < last - 1:
                     # The clock went back, as it may when a disc lands on an empty desk:
                     # bar 0 moves with it by whole bars, or every later step waits for
@@ -95,9 +109,17 @@ class Player:
                 bar = math.floor((beat - start) / BEATS_PER_BAR)
                 self._update(bar=max(bar, 0),
                              next_bar=pending[0][0] if pending else None)
-                while pending and beat >= start + pending[0][0] * BEATS_PER_BAR - FIRE_AHEAD_BEATS:
-                    self._send(pending.pop(0)[1])
-                if not pending and bar >= end_bar:
+                if pending:
+                    downbeat = start + pending[0][0] * BEATS_PER_BAR
+                    # How long to wait before sending, for the steps to arrive on time.
+                    # Below zero the bar is late, after a stall, and goes out at once
+                    wait = (downbeat - beat) / per_second + ARRIVE_SECONDS - trip
+                    if wait < SETTLE_SECONDS:
+                        if wait > 0 and stop.wait(wait):
+                            break
+                        self._send(pending.pop(0)[1])
+                        continue
+                elif bar >= end_bar:
                     break
                 stop.wait(POLL_SECONDS)
         except GameError as e:
@@ -106,5 +128,4 @@ class Player:
             self._update(playing=False)
 
     def _send(self, commands) -> None:
-        for op, args in commands:
-            self.bridge.call(op, **args)
+        self.bridge.call("batch", commands=[{"op": op, "args": args} for op, args in commands])

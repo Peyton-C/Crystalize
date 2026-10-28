@@ -8,7 +8,7 @@ Point an MCP client at `crystalize mcp`. The server speaks MCP over stdin and st
 claude mcp add crystalize -- uv run --directory /path/to/Crystalize crystalize mcp
 ```
 
-Playing needs FUSER running with a freestyle session open. Searching, tagging and planning work while it is closed, from the last library Crystalize saw.
+Playing needs FUSER running with a freestyle session or a campaign set open. Searching, tagging and planning work while it is closed, from the last library Crystalize saw.
 
 ## Decks and discs
 FUSER has four decks, numbered 1 to 4 here. Each plays one disc, a single part of a song:
@@ -35,6 +35,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | Tool | What |
 | --- | --- |
 | `get_state` | The key, the tempo, the tempo range FUSER allows, each deck's playing and queued disc, and the mix playing, with the bar it is on |
+| `get_set` | In a campaign set, the open crowd requests, the goals not yet done, the crowd meter and the score, see Campaign |
 | `search_songs` | Songs whose title or artist has every word of `query`, narrowed by `genre`, `key`, `bpm_min`, `bpm_max`, `energy_min`, `energy_max`, `untagged` and `near`, a page at a time. Each lists its tags and its discs by name |
 | `tag_songs` | Writes down what songs are like, see Tags |
 | `plan_mix` | Checks a plan or a saved mix without playing it, see Plans |
@@ -99,9 +100,33 @@ A plan is the opening key and tempo and a list of steps, each on a bar counted f
 A check is a warning, not a rule. The agent should fix it or know why it is keeping it.
 
 ## Playing
-`play_mix` returns at once and plays in the background, sending each bar's steps within the last beat before the bar. FUSER quantizes a drop to the next beat, half bar or bar, and a bar's downbeat is all three, so the steps land on it whichever you have set. Set FUSER to quantize to cues and a drop waits for the track's next cue instead, which no plan can know, and custom songs often have none.
+`play_mix` returns at once and plays in the background, sending each bar's steps together, timed to reach FUSER just after the bar's downbeat. FUSER plays them from the downbeat, and in a campaign set a drop timed this way counts as a drop on the downbeat. Set FUSER to quantize to cues and a drop waits for the track's next cue instead, which no plan can know, and custom songs often have none.
 
 When the decks are empty, bar 0 starts at once. When something is playing, bar 0 waits for the next downbeat, so the mix starts in phase with it. Decks the plan does not fill at bar 0 are emptied first, since the plan was checked as if they were. `get_state` shows the bar the mix is on. A disc dropped by hand during a mix stays until a step replaces it.
+
+## Campaign
+Crystalize plays campaign sets as it plays freestyle, and any disc in the library can be dropped, not only the set's crate. Drops, ejects and the rest count toward goals and crowd requests as if you had made them, and a drop `play_mix` makes counts as one on the downbeat.
+
+`get_set` reports the set as FUSER keeps it:
+
+| Field | What |
+| --- | --- |
+| `measure` | The measure FUSER is on. Requests are timed in these, not in a mix's bars |
+| `requests` | Each scheduled or active crowd request: what it `wants`, such as "a disc played on Synth", and the measure it `starts` and `ends` on. An active one has `measures_left`. FUSER chooses what a request wants only when it starts |
+| `requests_settled` | How many have passed and failed |
+| `goals` | Each goal not yet done, with how many times it has been `done` `of` the times it needs |
+| `goals_done` | How many are done |
+| `crowd_meter_on` | Whether this part of the set has a crowd meter. The early ones do not |
+| `crowd_meter` | From 0 to 100, starting at 50. The set fails at 0 unless No Fail is on |
+| `crowd` | The meter's band: low, medium, high or peak |
+| `crowd_warnings` | Warnings the crowd has given, such as for changing too much at once |
+| `freshness` | From 0 to 100, how new the mix sounds. A drop raises it and it fades while nothing changes |
+| `score` | The set's score so far |
+| `unreadable` | Parts the mod could not read, if any, with why |
+
+The meter drains about 1 a second once 6 seconds pass without an action, and a good action adds 3. A bad one takes 4, and so do a missed request and a missed goal. FUSER remembers the last 3 discs and counts more than 3 actions in 6 bars as too much, so keep it fed with one fresh disc every few bars rather than many at once.
+
+A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "Include 2+ {Genre} discs". Disc types are filled in, so "Drop a {btType}" reads "Drop a beat (blue)".
 
 ## Tempo range
 FUSER allows 90 to 157 BPM. FuserSongLoader builds from May 2026 on widen it to 60 to 200. Crystalize reads the range from the game, so plans are checked against whichever you have.

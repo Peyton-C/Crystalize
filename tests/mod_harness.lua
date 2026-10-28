@@ -66,6 +66,35 @@ local function disc(short)
     return object("disc " .. short, { GetCelShortName = function() return name(short) end })
 end
 
+-- A TArray as UE4SS's Lua hands one over: ForEach passes each item wrapped, get() unwraps.
+-- A TMap's ForEach passes its keys and values the same way
+local function tarrayOf(list)
+    return { ForEach = function(_, fn)
+        for i, v in ipairs(list) do
+            fn(i, { get = function() return v end })
+        end
+    end }
+end
+
+local function goal(label, goalName, done)
+    return object(label, {
+        _myGoalData = object(label .. " data", { GoalName = name(goalName), GoalDescription = name("") }),
+        GetFullName = function() return label end,
+        GetClass = function() return { GetFName = function() return name("ShowGoalQuota") end } end,
+        HasBeenCompleted = function() return done end,
+        GetNumTimesPerformed = function() return done and 1 or 0 end,
+        GetRequiredNumActions = function() return 1 end,
+    })
+end
+local doneGoal = goal("GoalBeat", "Drop a {btType}", true)
+local openGoal = goal("GoalBass", "Drop a {bsType}", false)
+
+local synthRequest = object("SynthRequest", {
+    PromptMessage = name("Some {Instrument} will make my day!"),
+    RequestCelFilter = { FilterTo = 1, LoopType = 0, instrument = 5, Genre = 0, YearRange = 0,
+                         songs = tarrayOf({}), Cels = tarrayOf({}) },
+})
+
 local world = {
     BP_Deck_C = {
         object("Deck0", { track = 0, CurPlayingDisc = disc("callmemaybebt"), CurQueuedDisc = INVALID }),
@@ -78,6 +107,30 @@ local world = {
         GetKey = function() return 7 end, GetKeyMode = function() return 1 end,
         GetCurrentBPM = function() return 120 end,
         GetMinBpm = function() return 60 end, GetMaxBpm = function() return 200 end,
+        -- Recorded like an undefined method, so test_clock still sees it asked raw
+        GetCurrentMeasure = function(_, timeType)
+            calls[#calls + 1] = { object = "HypeAudio", method = "GetCurrentMeasure", args = mod.array({ timeType }) }
+            return 84
+        end,
+    }) },
+    RequestMgr = { object("RequestMgr", { _requests = tarrayOf({
+        { uniqueRequestId = -1, State = 1, RequestStartMeasure = 82, AvailabilityDurationInBars = 14,
+          ProceduralRequests = 1, MyRequest = synthRequest },
+        { uniqueRequestId = -1, State = 0, RequestStartMeasure = 110, AvailabilityDurationInBars = 12,
+          ProceduralRequests = 1, MyRequest = INVALID },
+    }) }) },
+    ShowGoalsMgr = { object("ShowGoalsMgr", {
+        _allGoalsUsedThisShow = tarrayOf({ doneGoal, openGoal }),
+        _currentlyActiveGoals = tarrayOf({ openGoal }),
+    }) },
+    SkillStat_Freshness = { object("Freshness", {
+        GetCurStatValue = function() return 0.5 end,
+        GetMinValue = function() return 0 end, GetMaxValue = function() return 1 end,
+    }) },
+    ShowFlowMgr = { object("ShowFlowMgr", { GetScore = function() return 1500 end }) },
+    BP_Crowd_Manager_C = { object("Crowd", { CurrentCrowdMeterState = 1 }) },
+    WBP_ShowsCrowdMeter_C = { object("CrowdMeter", {
+        CurHealth = 30, MaxHealth = 100, CurHealthState = 1, WarningCount = 1,
     }) },
     DeskState = { object("DeskState") },
     AudioController = { object("AudioController") },

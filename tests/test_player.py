@@ -16,18 +16,22 @@ class ClockBridge:
         self.beat = beat
         self.sent = []  # (beat when sent, op, args)
         self.playing = list(playing)
+        self.requests = []  # the ops of each request that changed something
         self.fail_on = None
         self.lock = threading.Lock()
 
     def call(self, op, **args):
         with self.lock:
             if op == "clock":
-                return {"beat": self.beat}
+                return {"beat": self.beat, "bpm": 120}
             if op == "state":
                 return {"decks": [{"playing": p} for p in self.playing]}
-            if op == self.fail_on:
+            commands = [(c["op"], c["args"]) for c in args["commands"]] if op == "batch" \
+                else [(op, args)]
+            if any(o == self.fail_on for o, _ in commands):
                 raise GameError("FUSER is not answering")
-            self.sent.append((self.beat, op, args))
+            self.requests.append([o for o, _ in commands])
+            self.sent.extend((self.beat, o, a) for o, a in commands)
             return {}
 
     def to(self, beat):
@@ -54,9 +58,8 @@ SCHEDULE = [
 ]
 
 
-def test_steps_go_out_in_the_last_beat_before_their_bar():
-    # Inside the beat before the downbeat, so beat, half bar and bar quantization all
-    # land them on it
+def test_steps_go_out_to_arrive_on_their_downbeat():
+    # Earlier, and the campaign does not count a drop as on the downbeat
     fuser = ClockBridge(beat=13.5)
     p = Player(fuser)
     p.start("test", SCHEDULE, 6, {0})
@@ -64,14 +67,14 @@ def test_steps_go_out_in_the_last_beat_before_their_bar():
     assert [op for _, op, _ in fuser.sent] == ["drop", "set_tempo"]
     assert p.status()["started_beat"] == 16
 
-    fuser.to(23.2)  # bar 2 starts on beat 24
+    fuser.to(23.4)  # bar 2 starts on beat 24, more than SETTLE_SECONDS off at 120 BPM
     time.sleep(0.02)
     assert len(fuser.sent) == 2
-    fuser.to(23.25)
+    fuser.to(24.0)
     wait_until(lambda: len(fuser.sent) == 3)
-    assert fuser.sent[2] == (23.25, "drop", {"name": "bbs", "deck": 1, "queue": False})
+    assert fuser.sent[2] == (24.0, "drop", {"name": "bbs", "deck": 1, "queue": False})
 
-    fuser.to(31.3)
+    fuser.to(32.0)
     wait_until(lambda: len(fuser.sent) == 4)
     assert p.status()["playing"]
     fuser.to(40.0)  # bar 6, the end
@@ -79,7 +82,8 @@ def test_steps_go_out_in_the_last_beat_before_their_bar():
     assert p.status()["error"] is None
 
 
-@pytest.mark.parametrize("beat, start", [(13.5, 16), (15.2, 16), (15.3, 20), (12.0, 16)])
+@pytest.mark.parametrize("beat, start", [(13.5, 16), (15.3, 16), (15.99, 16), (16.0, 20),
+                                         (12.0, 16)])
 def test_bar_0_waits_for_a_downbeat_when_music_is_playing(beat, start):
     # Sent at once it would land on the next beat under beat quantization, out of phase
     # with the decks already playing
@@ -90,7 +94,7 @@ def test_bar_0_waits_for_a_downbeat_when_music_is_playing(beat, start):
     assert p.status()["started_beat"] == start
     time.sleep(0.02)
     assert fuser.sent == []
-    fuser.to(start - 0.75)
+    fuser.to(start)
     wait_until(lambda: len(fuser.sent) == 2)
     p.stop()
 
@@ -111,7 +115,7 @@ def test_clock_restart_moves_bar_0_with_it():
     wait_until(lambda: len(fuser.sent) == 2)
     fuser.to(0.5)
     wait_until(lambda: p.status()["started_beat"] == 0)
-    fuser.to(7.25)  # bar 2 lands on beat 8 of the restarted clock, not 508
+    fuser.to(8.0)  # bar 2 lands on beat 8 of the restarted clock, not 508
     wait_until(lambda: len(fuser.sent) == 3)
     p.stop()
 
@@ -135,8 +139,31 @@ def test_decks_the_plan_does_not_fill_are_emptied():
     p.start("test", SCHEDULE, 6, {0})
     wait_until(lambda: len(fuser.sent) == 1)
     assert fuser.sent[0][1:] == ("eject", {"deck": 2})  # deck 0 is about to be replaced
-    fuser.to(3.5)
+    fuser.to(4.0)
     wait_until(lambda: len(fuser.sent) == 3)
+    p.stop()
+
+
+def test_a_bar_goes_out_in_one_request():
+    # One round trip each put a bar's last drop a third of a beat behind its first
+    fuser = ClockBridge(beat=0.0)
+    p = Player(fuser)
+    p.start("test", SCHEDULE, 6, {0})
+    wait_until(lambda: len(fuser.sent) == 2)
+    assert fuser.requests == [["drop", "set_tempo"]]
+    p.stop()
+
+
+def test_the_last_stretch_is_slept_on_the_tempo():
+    # Polling there could overshoot the window, so the player waits it out without asking
+    fuser = ClockBridge(beat=0.0)
+    p = Player(fuser)
+    p.start("test", SCHEDULE, 6, {0})
+    wait_until(lambda: len(fuser.sent) == 2)
+    fuser.to(7.8)  # 0.1 s and ARRIVE_SECONDS before bar 2, at 120 BPM
+    asked = time.monotonic()
+    wait_until(lambda: len(fuser.sent) == 3)
+    assert time.monotonic() - asked >= 0.1
     p.stop()
 
 
@@ -167,6 +194,6 @@ def test_error_stops_and_is_reported():
     fuser.fail_on = "eject"
     p = Player(fuser)
     p.start("test", SCHEDULE, 6, {0})
-    fuser.to(15.5)  # past where bar 4's eject goes out
+    fuser.to(16.0)  # bar 4, whose eject fails
     wait_until(lambda: not p.status()["playing"])
     assert p.status()["error"] == "FUSER is not answering"

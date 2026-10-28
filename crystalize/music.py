@@ -25,6 +25,21 @@ INSTRUMENTS = (None, "Guitar", "Bass", "Drums", "Vocal", "Synth", "Sampler", "Ho
                "Electric Guitar", "Acoustic Drums", "Electric Drums", "Steel Drums", "Piano",
                "Organ", "Saxophone", "Trumpet", "Didgeridoo", "Fiddle", "Violin", "Dogs")
 
+# ERequestState, a crowd request's
+REQUEST_STATES = ("scheduled", "active", "passed", "passed", "failed")
+OPEN_REQUESTS = ("scheduled", "active")
+
+# ECrowdMeterHealthState, the crowd meter's band
+CROWD_STATES = ("low", "medium", "high", "peak")
+
+# EYearRange
+YEAR_RANGES = (None, "1600s", "1700s", "1800s") + tuple(f"{y}s" for y in range(1900, 2030, 10))
+
+# FUSER writes a goal's name with placeholders it fills on screen. The disc types come from
+# their short names, the end of every disc's name; the rest the mod cannot read yet
+GOAL_PLACEHOLDERS = {"{btType}": "beat (blue)", "{bsType}": "bass (green)",
+                     "{lpType}": "loop (yellow)", "{ldType}": "lead (red)"}
+
 # EInstrument values that sing. A lead disc with no instrument counts too, since most are
 VOCALS = {"Vocal", "Female Vocals", "Male Vocals", None}
 
@@ -161,3 +176,33 @@ def disc_index(songs_: list[dict], discs: list[dict]) -> dict[str, dict]:
 
 def is_vocal(disc: dict) -> bool:
     return disc["type"] == "lead" and disc.get("instrument") in VOCALS
+
+
+def request_wants(f: dict | None) -> str | None:
+    """What a crowd request's FCelFilter asks for, in words. Its FilterTo says which of
+    the filter's fields counts: ECelFilterType."""
+    if not f:
+        return None
+    kind = f.get("type")
+    if kind == 0:
+        return f"a {_named(DISC_TYPES, f.get('disc_type')) or 'disc'} disc"
+    if kind in (1, 4):
+        return f"a disc played on {_named(INSTRUMENTS, f.get('instrument')) or 'an instrument'}"
+    if kind == 2:
+        return f"a {_named(GENRES, f.get('genre')) or 'genre'} disc"
+    if kind == 3:
+        return f"a disc from the {_named(YEAR_RANGES, f.get('years')) or 'years asked for'}"
+    if kind == 5:
+        return "a disc from " + ", ".join(f.get("songs") or ["a song FUSER names"])
+    if kind == 6:
+        return "one of " + ", ".join(f.get("discs") or ["the discs FUSER names"])
+    return None
+
+
+def goal_text(name: str | None) -> str | None:
+    """A goal's name with the placeholders filled that can be."""
+    if not name:
+        return name
+    for placeholder, words in GOAL_PLACEHOLDERS.items():
+        name = name.replace(placeholder, words)
+    return name

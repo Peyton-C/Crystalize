@@ -112,6 +112,77 @@ def test_simple_ops(ask, op, args, method, expected):
     assert [(c["method"], c["args"]) for c in calls] == [(method, expected)]
 
 
+def test_batch_runs_in_order(ask):
+    body, calls = ask("batch", commands=[
+        {"op": "drop", "args": {"name": "callmemaybebs", "deck": 1, "queue": False}},
+        {"op": "set_tempo", "args": {"bpm": 128}}])
+    assert body["ok"] and len(body["result"]) == 2
+    assert [c["method"] for c in calls] == ["NetSpawnDisc", "NetSetTempo"]
+
+
+def test_batch_with_an_unknown_command_runs_nothing(ask):
+    body, calls = ask("batch", commands=[
+        {"op": "drop", "args": {"name": "callmemaybebs", "deck": 1}}, {"op": "dance"}])
+    assert not body["ok"] and "dance" in body["error"]
+    assert calls == []
+
+
+def test_batch_cannot_hold_a_batch(ask):
+    body, _ = ask("batch", commands=[{"op": "batch", "args": {}}])
+    assert not body["ok"]
+
+
+def test_batch_reports_the_command_that_failed(ask):
+    body, calls = ask("batch", commands=[
+        {"op": "set_tempo", "args": {"bpm": 128}},
+        {"op": "drop", "args": {"name": "nope", "deck": 0}}])
+    assert not body["ok"] and "command 2" in body["error"] and "no disc named nope" in body["error"]
+    assert [c["method"] for c in calls] == ["NetSetTempo"]
+
+
+def test_set_state(ask):
+    body, _ = ask("set_state")
+    state = body["result"]
+    assert state["problems"] == [] and state["measure"] == 84
+    active, scheduled = state["requests"]
+    assert active == {
+        "id": -1, "state": 1, "start_measure": 82, "bars": 14, "procedural": 1,
+        "prompt": "Some {Instrument} will make my day!",
+        "filter": {"type": 1, "disc_type": 0, "instrument": 5, "genre": 0, "years": 0,
+                   "songs": [], "discs": []},
+    }
+    assert "filter" not in scheduled  # FUSER picks what it wants only when it starts
+    done, open_ = state["goals"]
+    assert (done["name"], done["completed"], done["active"]) == ("Drop a {btType}", True, False)
+    # false, not null: an answer of false must not fall through to the fallback
+    assert (open_["completed"], open_["active"], open_["kind"]) == (False, True, "ShowGoalQuota")
+    assert state["freshness"] == {"value": 0.5, "min": 0, "max": 1}
+    assert state["crowd"] == {"CurHealth": 30, "MaxHealth": 100, "CurHealthState": 1,
+                              "WarningCount": 1}
+    assert state["show"]["score"] == 1500
+
+
+def test_set_state_reads_each_part_alone(ask):
+    body, _ = ask("set_state", missing="RequestMgr")
+    state = body["result"]
+    assert body["ok"] and state["requests"] is None
+    assert state["problems"] == ["requests: RequestMgr not found, open a freestyle session or "
+                                 "a campaign set first"]
+    assert state["freshness"]["value"] == 0.5 and len(state["goals"]) == 2
+
+
+def test_read_fields(ask):
+    body, calls = ask("read", **{"class": "BP_Crowd_Manager_C",
+                                 "fields": ["CurrentCrowdMeterState", "_label"]})
+    assert body["result"] == {"CurrentCrowdMeterState": 1, "_label": "Crowd"}
+    assert calls == []  # read only: nothing in the game is called
+
+
+def test_read_unreadable_field_is_null(ask):
+    body, _ = ask("read", **{"class": "ShowGoalsMgr", "fields": ["nope"]})
+    assert body["ok"] and body["result"] == {"nope": None}
+
+
 def test_outside_freestyle(ask):
     body, _ = ask("drop", missing="DeskState", name="callmemaybebt", deck=0)
     assert not body["ok"] and "freestyle" in body["error"]

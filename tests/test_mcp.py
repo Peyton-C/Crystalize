@@ -34,6 +34,30 @@ STATE = {"key": 8, "mode": 1, "bpm": 120, "bpm_min": 60, "bpm_max": 200,
                    {"playing": None}, {"playing": None}]}
 
 
+# What set_state gave in venue 2: one goal done, one up, a synth request active and one
+# scheduled with nothing chosen yet
+SET_STATE = {
+    "measure": 84, "problems": [],
+    "requests": [
+        {"id": -1, "state": 1, "procedural": 1, "start_measure": 82, "bars": 14,
+         "prompt": "Some {Instrument} will make my day!",
+         "filter": {"type": 1, "instrument": 5, "disc_type": 0, "genre": 0, "years": 0,
+                    "songs": [], "discs": []}},
+        {"id": -1, "state": 0, "procedural": 1, "start_measure": 110, "bars": 12},
+        {"id": -1, "state": 3, "start_measure": 40, "bars": 14},
+    ],
+    "goals": [
+        {"name": "Drop a {btType}", "kind": "ShowGoalQuota", "performed": 1, "required": 1,
+         "progress": 1, "bars": 0, "completed": True, "active": False},
+        {"name": "Include 2+ {Genre} discs", "kind": "ShowGoalQuota", "performed": 1,
+         "required": 2, "progress": 0.5, "bars": 0, "completed": False, "active": True},
+    ],
+    "freshness": {"min": 0, "max": 1, "value": 0.304},
+    "crowd": {"CurHealth": 30, "MaxHealth": 100, "CurHealthState": 1, "WarningCount": 1},
+    "show": {"score": 3000, "section": 2, "has_meter": True},
+}
+
+
 class FakeBridge:
     def __init__(self):
         self.calls = []
@@ -44,7 +68,8 @@ class FakeBridge:
         self.calls.append((op, args))
         if op in self.fail:
             raise GameError(self.fail[op])
-        return {"discs": DISCS, "state": STATE, "clock": {"beat": 0.0}}.get(op, {})
+        return {"discs": DISCS, "state": STATE, "clock": {"beat": 0.0},
+                "set_state": SET_STATE}.get(op, {})
 
     def ops(self):
         return [op for op, _ in self.calls]
@@ -87,7 +112,7 @@ def test_initialize_and_list(talk):
     assert init["result"]["protocolVersion"] == "2025-03-26"
     assert init["result"]["capabilities"] == {"tools": {}, "prompts": {}}
     names = [t["name"] for t in tools["result"]["tools"]]
-    assert names[:3] == ["get_state", "search_songs", "tag_songs"]
+    assert names[:4] == ["get_state", "get_set", "search_songs", "tag_songs"]
     assert {"plan_mix", "play_mix", "stop_mix", "save_mix", "drop_disc"} <= set(names)
     assert [p["name"] for p in prompts["result"]["prompts"]] == \
         ["tag_library", "build_mix", "review_mix"]
@@ -341,3 +366,50 @@ def test_set_key_rejects(talk, fake, text):
 def test_simple_tools(talk, fake, name, args, op, sent):
     _, failed = call(talk, name, **args)
     assert not failed and fake.calls == [(op, sent)]
+
+
+def test_get_set(talk):
+    result, failed = call(talk, "get_set")
+    assert not failed
+    assert result == {
+        "measure": 84,
+        "requests": [
+            {"state": "active", "wants": "a disc played on Synth", "starts": 82, "ends": 96,
+             "measures_left": 12},
+            {"state": "scheduled", "starts": 110, "ends": 122},
+        ],
+        "requests_settled": {"passed": 1, "failed": 0},
+        "goals": [{"goal": "Include 2+ {Genre} discs", "done": 1, "of": 2}],
+        "goals_done": 1,
+        "crowd_meter_on": True,
+        "crowd_meter": 30,
+        "crowd": "medium",
+        "crowd_warnings": 1,
+        "freshness": 30,
+        "score": 3000,
+    }
+
+
+def test_get_set_says_what_it_could_not_read(talk, fake, monkeypatch):
+    monkeypatch.setitem(SET_STATE, "problems", ["freshness: SkillStat_Freshness not found"])
+    monkeypatch.setitem(SET_STATE, "freshness", None)
+    result, _ = call(talk, "get_set")
+    assert result["unreadable"] == ["freshness: SkillStat_Freshness not found"]
+    assert "freshness" not in result
+
+
+@pytest.mark.parametrize("f, words", [
+    ({"type": 0, "disc_type": 2}, "a loop disc"),
+    ({"type": 1, "instrument": 7}, "a disc played on Horns"),
+    ({"type": 2, "genre": 3}, "a Dance disc"),
+    ({"type": 3, "years": 13}, "a disc from the 1990s"),
+    ({"type": 5, "songs": ["callmemaybe"]}, "a disc from callmemaybe"),
+])
+def test_request_wants(f, words):
+    from crystalize import music
+    assert music.request_wants(f) == words
+
+
+def test_goal_text_fills_disc_types():
+    from crystalize import music
+    assert music.goal_text("Drop a {bsType}") == "Drop a bass (green)"
