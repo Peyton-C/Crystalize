@@ -36,6 +36,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | --- | --- |
 | `get_state` | The key, the tempo, the tempo range FUSER allows, each deck's playing and queued disc, and the mix playing, with the bar it is on |
 | `get_set` | In a campaign set, the open crowd requests, the goals not yet done, the crowd meter and the score, see Campaign |
+| `await_event` | In a campaign set, waits until a request, goal or the meter changes and says what, see Campaign |
 | `search_songs` | Songs whose title or artist has every word of `query`, narrowed by `genre`, `key`, `bpm_min`, `bpm_max`, `year_min`, `year_max`, `instrument`, `disc_type`, `energy_min`, `energy_max`, `untagged` and `near`, a page at a time. Each lists its tags and its discs by name |
 | `tag_songs` | Writes down what songs are like, see Tags |
 | `plan_mix` | Checks a plan or a saved mix without playing it, see Plans |
@@ -43,8 +44,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `play_mix` | Plays a plan or a saved mix, each step on its bar |
 | `stop_mix` | Stops the mix. The decks keep playing what they have |
 | `keep_alive` | Swaps discs from a list now and then, so a campaign set's crowd meter does not drain while the agent thinks |
-| `drop_disc`, `drop_queue`, `set_key`, `set_tempo` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar |
-| `eject`, `mute_deck`, `solo_deck` | Act on the game at once, outside a plan |
+| `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar |
 
 A call with an argument its tool does not take is refused, and the error lists the arguments it does take.
 
@@ -113,6 +113,8 @@ Crystalize plays campaign sets as it plays freestyle, and any disc in the librar
 
 The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 beats overactive, and counts a drop of one of the last 3 discs as a repeat. `keep_alive` works inside those rules. 3 bars after the last change, made by anyone, it drops the next disc of its list on that disc's deck, skipping one already on a deck or among the last 3 dropped, and skipping the bar if a drop would make the set overactive. It waits while a mix plays, and `get_state` shows what it last dropped. It rides out a command FUSER leaves unanswered and stops after 3 in a row. Give it at least 4 discs that can swap in for each other, such as two beats on one deck and two on another, and stop it with `stop`.
 
+`drop_disc` with `on_pickup` lands a disc on its next pickup, where a vocal or a fill comes in ahead of the bar, for goals that ask for a drop on a pickup. Crystalize queues the disc, so it is loaded, then drops it just after the pickup, and says which beat of the disc's loop it aimed at. Some older custom songs have no pickups, and `drop_disc` refuses those.
+
 `get_set` reports the set as FUSER keeps it:
 
 | Field | What |
@@ -128,11 +130,30 @@ The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 bea
 | `crowd_warnings` | Warnings the crowd has given, such as for changing too much at once |
 | `freshness` | From 0 to 100, how new the mix sounds. A drop raises it and it fades while nothing changes |
 | `score` | The set's score so far |
+| `stars` | Stars earned so far, out of 5 |
+| `points` | Where the score came from: requests, request combos, goals, perfect, early, late and bad timing, and the crowd meter |
+| `ended` | Present once FUSER has counted the set out. The set still reads on the results screen |
 | `unreadable` | Parts the mod could not read, if any, with why |
 
 The meter drains about 1 a second once 6 seconds pass without an action, and a good action adds 3. A bad one takes 4, and so do a missed request and a missed goal. FUSER remembers the last 3 discs and counts more than 3 actions in 6 bars as too much, so keep it fed with one fresh disc every few bars rather than many at once.
 
 A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "{Transition} Smart Riser". Disc types, instruments, genres and the song a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)", "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah" and "Include 2+ {Genre} discs" reads "Include 2+ Rock discs".
+
+`await_event` waits for the set to change, so the agent does not spend its turns polling `get_set`. It returns the events and `get_set`'s view together. Crystalize compares each read with the last one the agent saw through either tool, so anything that happened while the agent was busy comes back at once. Otherwise it waits up to `seconds`, 20 by default and at most 60.
+
+| Event | When |
+| --- | --- |
+| `request_coming` | A request is scheduled. What it wants is chosen when it starts |
+| `request_started` | A request starts, with what it wants and the measure it ends on |
+| `request_ending` | An active request has 4 measures or fewer left, said once |
+| `request_passed`, `request_failed` | A request settles |
+| `goal_started` | A new goal is up |
+| `goal_done` | A goal is done |
+| `goal_ended` | A goal stopped before it was done |
+| `meter_on` | The crowd meter comes on |
+| `meter_low` | The meter falls below `meter_below`, 30 by default, said once on the way down |
+| `set_ended` | FUSER counts the set out, or it can no longer be read, with the stars earned |
+| `keep_alive_stopped` | `keep_alive` gave up, with why |
 
 ## Tempo range
 FUSER allows 90 to 157 BPM. FuserSongLoader builds from May 2026 on widen it to 60 to 200. Crystalize reads the range from the game, so plans are checked against whichever you have.

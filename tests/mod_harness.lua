@@ -51,21 +51,6 @@ local function tarray(n)
     return { GetArrayNum = function() return n end }
 end
 
-local function cel(short, celType, of)
-    return object(short, {
-        shortName = name(short), Title = name("Call Me Maybe"), CelType = celType,
-        Key = 7, mode = 0, BPM = 120, instrument = 3, song = of or song, SongLengthTicks = 30720,
-        Transposes = { C = -5, Db = -6, D = 5, Eb = 4, E = 3, F = 2, Gb = 1, G = 0, Ab = -1,
-                       A = -2, Bb = -3, B = -4 },
-        MajorMidiSongAssets = tarray(1), MinorMidiSongAssets = tarray(0),
-    })
-end
-local cels = { cel("callmemaybebt", 0), cel("callmemaybebs", 1), cel("kingsandqueensbt", 0, dlc) }
-
-local function disc(short)
-    return object("disc " .. short, { GetCelShortName = function() return name(short) end })
-end
-
 -- A TArray as UE4SS's Lua hands one over: ForEach passes each item wrapped, get() unwraps.
 -- A TMap's ForEach passes its keys and values the same way
 local function tarrayOf(list)
@@ -75,6 +60,23 @@ local function tarrayOf(list)
         end
     end }
 end
+
+local function cel(short, celType, of)
+    return object(short, {
+        shortName = name(short), Title = name("Call Me Maybe"), CelType = celType,
+        Key = 7, mode = 0, BPM = 120, instrument = 3, song = of or song, SongLengthTicks = 30720,
+        Transposes = { C = -5, Db = -6, D = 5, Eb = 4, E = 3, F = 2, Gb = 1, G = 0, Ab = -1,
+                       A = -2, Bb = -3, B = -4 },
+        MajorMidiSongAssets = tarray(1), MinorMidiSongAssets = tarray(0),
+        PickupBeats = tarrayOf({ 15, 28.5 }),
+    })
+end
+local cels = { cel("callmemaybebt", 0), cel("callmemaybebs", 1), cel("kingsandqueensbt", 0, dlc) }
+
+local function disc(short)
+    return object("disc " .. short, { GetCelShortName = function() return name(short) end })
+end
+
 
 local function goal(label, goalName, done, featured)
     return object(label, {
@@ -148,12 +150,30 @@ local world = {
     }) },
     -- The set features two songs, and the open goal's config points at the second
     ShowFlowMgr = { object("ShowFlowMgr", { GetScore = function() return 1500 end,
+        GetCurrentShowSectionIndex = function() return 1 end,
+        HasShowEndCountdownBeenBroadcast = function() return false end,
+        GetScoringResults = function() return { StarsEarned = 2.5, FailedShow = false,
+            NumRequestsSatisfied = 1, NumGoalActionsSatisfied = 20, PercentageOfGoalsCompleted = 1,
+            PercentageOfRequestsCompleted = 0.33, PointsEarned = { RequestPoints = 2200,
+                RequestComboBonusPoints = 0, ShowGoalPoints = 18000, BadTimingBonusPoints = 0,
+                EarlyTimingBonusPoints = 100, LateTimingBonusPoints = 0,
+                PerfectTimingBonusPoints = 800, CrowdMeterPoints = 2400 } } end,
         _curPrompt = object("M_0030", {
             FeaturedSongs = tarrayOf({ song, casbah }),
-            ShowSections = tarrayOf({ { GoalsThisSection = tarrayOf({
-                { ShowGoalData = asset("GoalBeat"), FeaturedSongIndex = 0 },
-                { ShowGoalData = asset("GoalBass"), FeaturedSongIndex = 1 },
-            }) } }),
+            ShowSections = tarrayOf({
+                { GoalsThisSection = tarrayOf({
+                    { ShowGoalData = asset("GoalBeat"), FeaturedSongIndex = 0 },
+                    { ShowGoalData = asset("GoalBass"), FeaturedSongIndex = 0 },
+                }) },
+                -- The bass goal comes back in the section playing, featuring the other song
+                { GoalsThisSection = tarrayOf({
+                    { ShowGoalData = asset("GoalBass"), FeaturedSongIndex = 1 },
+                }) },
+                -- And again in one not reached yet, which must not count
+                { GoalsThisSection = tarrayOf({
+                    { ShowGoalData = asset("GoalBass"), FeaturedSongIndex = 0 },
+                }) },
+            }),
         }) }) },
     BP_Crowd_Manager_C = { object("Crowd", { CurrentCrowdMeterState = 1 }) },
     ShowPrompt = { object("ShowPrompt", { FeaturedSongs = tarrayOf({ casbah }) }) },

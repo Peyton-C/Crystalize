@@ -21,6 +21,14 @@ BEATS_PER_BAR = 4
 # the middle of what counted, leaving room for a slow round trip either way.
 ARRIVE_SECONDS = 0.025
 
+# A pickup drop is aimed like a downbeat one, to arrive just after the beat, until the game
+# says otherwise: it is the window that counted for downbeats
+PICKUP_ARRIVE_SECONDS = ARRIVE_SECONDS
+
+# How far ahead the next pickup has to be to aim for it: time for a sent command to arrive
+# and for the queued disc to load onto its deck
+PICKUP_LEAD_BEATS = 2
+
 # Once a bar is this close, the player stops polling and sleeps out the rest on the tempo:
 # a poll and a round trip together can pass a fifth of a beat, more than the window allows
 SETTLE_SECONDS = 0.25
@@ -56,6 +64,7 @@ class Player:
         self._keeper: threading.Thread | None = None
         self._keep_stop = threading.Event()
         self._keep_status: dict = {}
+        self._sync_beat = 0.0
 
     def start(self, name: str, schedule: list, end_bar: int, opening_decks: set[int]) -> None:
         """Play `schedule`, a Plan's, stopping any mix already playing. `opening_decks`
@@ -119,6 +128,7 @@ class Player:
         asked = time.monotonic()
         clock = self.bridge.call("clock")
         trip = time.monotonic() - asked
+        self._sync_beat = clock.get("sync_beat") or 0
         return clock["beat"], max(clock.get("bpm") or 0, 1) / 60, trip
 
     def on_downbeat(self, commands) -> None:
@@ -130,8 +140,26 @@ class Player:
             self._send(commands)
             return
         beat, per_second, trip = self._clock()
-        downbeat = _next_downbeat(beat, per_second, trip)
-        while (wait := _wait(downbeat, beat, per_second, trip)) >= SETTLE_SECONDS:
+        self._send_at(commands, _next_downbeat(beat, per_second, trip), beat, per_second, trip)
+
+    def on_pickup(self, commands, pickups: list[float], loop_beats: float) -> float:
+        """Send `commands`, a drop, to reach FUSER on the next of its disc's pickups, the
+        beats in its loop where a drop can come in ahead of the bar. Every disc's loop runs
+        from FUSER's sync beat, so a pickup p falls on each clock beat that is p past it,
+        wrapped at the loop's length. Returns the clock beat it was aimed at."""
+        beat, per_second, trip = self._clock()
+        reach = beat + trip * per_second + PICKUP_LEAD_BEATS
+        place = (reach - self._sync_beat) % loop_beats
+        ahead = min((p - place) % loop_beats for p in pickups)
+        target = reach + ahead
+        self._send_at(commands, target, beat, per_second, trip, PICKUP_ARRIVE_SECONDS)
+        return target
+
+    def _send_at(self, commands, target, beat, per_second, trip,
+                 arrive=None) -> None:
+        """Wait until `commands` sent now would reach FUSER `arrive` seconds after clock
+        beat `target`, and send them."""
+        while (wait := _wait(target, beat, per_second, trip, arrive)) >= SETTLE_SECONDS:
             time.sleep(POLL_SECONDS)
             beat, per_second, trip = self._clock()
         if wait > 0:
@@ -281,10 +309,11 @@ def _next_downbeat(beat: float, per_second: float, trip: float) -> int:
     return math.floor((beat + trip * per_second) / BEATS_PER_BAR + 1) * BEATS_PER_BAR
 
 
-def _wait(downbeat: float, beat: float, per_second: float, trip: float) -> float:
+def _wait(downbeat: float, beat: float, per_second: float, trip: float,
+          arrive: float | None = None) -> float:
     """How long to wait before sending, for a command to arrive on time at `downbeat`.
     Below zero it is late, after a stall, and goes out at once."""
-    return (downbeat - beat) / per_second + ARRIVE_SECONDS - trip
+    return (downbeat - beat) / per_second + (ARRIVE_SECONDS if arrive is None else arrive) - trip
 
 
 def _unchanged(command, state: dict, held: list) -> bool:

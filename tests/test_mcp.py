@@ -1,4 +1,5 @@
 """The MCP server's protocol and tools, against a fake bridge instead of FUSER."""
+import copy
 import io
 import json
 
@@ -70,8 +71,9 @@ class FakeBridge:
         self.calls.append((op, args))
         if op in self.fail:
             raise GameError(self.fail[op])
-        return {"discs": DISCS, "state": STATE, "clock": {"beat": 3.98, "bpm": 120},
-                "set_state": SET_STATE}.get(op, {})
+        # A copy each time, as FUSER's answers are, so one read never changes with the next
+        return copy.deepcopy({"discs": DISCS, "state": STATE, "clock": {"beat": 3.98, "bpm": 120},
+                              "set_state": SET_STATE}.get(op, {}))
 
     def ops(self):
         return [op for op, _ in self.calls]
@@ -114,7 +116,7 @@ def test_initialize_and_list(talk):
     assert init["result"]["protocolVersion"] == "2025-03-26"
     assert init["result"]["capabilities"] == {"tools": {}, "prompts": {}}
     names = [t["name"] for t in tools["result"]["tools"]]
-    assert names[:4] == ["get_state", "get_set", "search_songs", "tag_songs"]
+    assert names[:5] == ["get_state", "get_set", "await_event", "search_songs", "tag_songs"]
     assert {"plan_mix", "play_mix", "stop_mix", "save_mix", "drop_disc"} <= set(names)
     assert [p["name"] for p in prompts["result"]["prompts"]] == \
         ["tag_library", "build_mix", "review_mix"]
@@ -397,10 +399,12 @@ def test_set_key_rejects(talk, fake, text):
 @pytest.mark.parametrize("name, args, op, sent", [
     ("mute_deck", {"deck": 2, "mute": True}, "mute", {"deck": 1, "on": True}),
     ("solo_deck", {"deck": 1, "solo": False}, "solo", {"deck": 0, "on": False}),
+    ("eject", {"deck": 3}, "eject", {"deck": 2}),
 ])
 def test_simple_tools(talk, fake, name, args, op, sent):
     _, failed = call(talk, name, **args)
-    assert not failed and fake.calls == [(op, sent)]
+    # Timed to the downbeat, as drops are, so the change lands on the beat
+    assert not failed and fake.ops() == ["state", "clock", op] and fake.calls[-1] == (op, sent)
 
 
 def test_get_set(talk):
@@ -495,3 +499,123 @@ def test_goal_text_fills_the_genre_from_its_filter():
         "Include 2+ Rock discs"
     assert music.goal_text("Include 2+ {Genre} discs", None, [{"type": 2, "genre": 0}]) == \
         "Include 2+ {Genre} discs"  # FUSER has not picked one
+    assert music.goal_text("Include 2+ {YearRange} discs", None, [{"type": 3, "years": 12}]) == \
+        "Include 2+ 1980s discs"
+
+
+# ------------------------------------------------------------------- events
+
+def request(state, start=82, bars=14, instrument=5):
+    return {"id": -1, "state": state, "start_measure": start, "bars": bars,
+            "filter": {"type": 1, "instrument": instrument}}
+
+
+def goal(name, completed=False, active=True):
+    return {"name": name, "completed": completed, "active": active, "performed": 0,
+            "required": 1}
+
+
+def read(measure=84, requests=(), goals=(), meter=None):
+    raw = {"measure": measure, "requests": list(requests), "goals": list(goals),
+           "show": {"has_meter": meter is not None, "score": 0}}
+    if meter is not None:
+        raw["crowd"] = {"CurHealth": meter, "MaxHealth": 100}
+    return raw
+
+
+def events(before, after, below=30):
+    server = mcp.Server(FakeBridge(), None, None)
+    return [e["event"] for e in server._events(before, after, below)]
+
+
+@pytest.mark.parametrize("before, after, expected", [
+    (read(), read(requests=[request(0)]), ["request_coming"]),
+    (read(requests=[request(0)]), read(requests=[request(1)]), ["request_started"]),
+    (read(requests=[request(1)]), read(requests=[request(2)]), ["request_passed"]),
+    (read(requests=[request(1)]), read(requests=[request(4)]), ["request_failed"]),
+    # A request settled before the agent first looked is history, not news
+    (None, read(requests=[request(2)]), []),
+    (read(measure=90, requests=[request(1)]), read(measure=93, requests=[request(1)]),
+     ["request_ending"]),  # 82 + 14 = 96, three measures left
+    (read(goals=[goal("Drop a {btType}")]), read(goals=[goal("Drop a {btType}", True)]),
+     ["goal_done"]),
+    (read(goals=[goal("a")]), read(goals=[goal("a", active=False)]), ["goal_ended"]),
+    (read(goals=[goal("a", True)]), read(goals=[goal("a", True), goal("b")]), ["goal_started"]),
+    (read(), read(meter=50), ["meter_on"]),
+    (read(meter=31), read(meter=29), ["meter_low"]),
+    (read(meter=29), read(meter=28), []),  # already low: said once, on the way down
+    (read(goals=[goal("a")]), {"measure": None, "requests": None, "goals": None},
+     ["set_ended"]),
+    (read(requests=[request(1)]), read(requests=[request(1)]), []),
+    # Still readable on the results screen: FUSER counting it out is the end
+    (read(), {**read(), "show": {"ending": True}}, ["set_ended"]),
+    ({**read(), "show": {"ending": True}}, {**read(), "show": {"ending": True}}, []),
+])
+def test_events(before, after, expected):
+    assert events(before, after) == expected
+
+
+def test_ending_is_said_once():
+    server = mcp.Server(FakeBridge(), None, None)
+    r = read(measure=93, requests=[request(1)])
+    assert [e["event"] for e in server._events(r, r, 30)] == ["request_ending"]
+    assert server._events(r, r, 30) == []
+
+
+def test_await_event_returns_what_happened_meanwhile(fake, monkeypatch):
+    # The agent saw the set with a request coming; it started while the agent was busy
+    server = mcp.Server(fake, None, None)
+    monkeypatch.setitem(SET_STATE, "requests", [request(0)])
+    server._tool_get_set({})
+    monkeypatch.setitem(SET_STATE, "requests", [request(1)])
+    result = server._tool_await_event({"seconds": 0})
+    assert result["events"] == [{"event": "request_started", "state": "active",
+                                 "wants": "a disc played on Synth", "starts": 82, "ends": 96,
+                                 "measures_left": 12}]
+    assert result["set"]["requests"][0]["wants"] == "a disc played on Synth"
+
+
+def test_await_event_times_out_with_the_set(fake, monkeypatch):
+    monkeypatch.setattr(mcp, "AWAIT_POLL_SECONDS", 0.01)
+    server = mcp.Server(fake, None, None)
+    server._tool_get_set({})
+    result = server._tool_await_event({"seconds": 0.05})
+    assert result["events"] == [] and result["set"]["measure"] == 84
+
+
+def test_await_event_rides_out_a_missed_read(fake, monkeypatch):
+    monkeypatch.setattr(mcp, "AWAIT_POLL_SECONDS", 0.01)
+    server = mcp.Server(fake, None, None)
+    server._tool_get_set({})
+    real, misses = fake.call, [1]
+
+    def call(op, **args):
+        if op == "set_state" and misses[0]:
+            misses[0] -= 1
+            raise GameError("FUSER took the command but did not answer")
+        return real(op, **args)
+    fake.call = call
+    assert server._tool_await_event({"seconds": 0})["set"]["measure"] == 84
+
+
+def test_get_set_gives_stars_and_points(talk, monkeypatch):
+    monkeypatch.setitem(SET_STATE, "show", {"score": 23500, "has_meter": True, "ending": True,
+        "results": {"stars": 2.5371, "points": {"ShowGoalPoints": 18000,
+                                                "PerfectTimingBonusPoints": 800,
+                                                "LateTimingBonusPoints": None}}})
+    result, _ = call(talk, "get_set")
+    assert result["stars"] == 2.54 and result["ended"] is True
+    assert result["points"] == {"goals": 18000, "perfect_timing": 800}
+
+
+def test_request_names_its_song_by_title(talk, monkeypatch):
+    monkeypatch.setitem(SET_STATE, "requests", [{"state": 1, "start_measure": 90, "bars": 14,
+        "filter": {"type": 5, "songs": ["mrbrightside"]}}])
+    result, _ = call(talk, "get_set")
+    assert result["requests"][0]["wants"] == "a disc from Mr. Brightside"
+
+
+def test_pickup_drop_needs_pickups(talk, fake):
+    # The fixture's discs carry none, as some older custom songs do
+    text, failed = call(talk, "drop_disc", disc="mrbrightsidebs", deck=1, on_pickup=True)
+    assert failed and "no pickups" in text and "drop" not in fake.ops()

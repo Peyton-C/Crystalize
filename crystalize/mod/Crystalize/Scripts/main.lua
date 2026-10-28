@@ -147,6 +147,35 @@ end
 
 ------------------------------------------------------------------------------- ops
 
+-- A number, boolean or string as is. Anything else, such as a struct a UFunction hands back,
+-- would stop the response encoding, so it is reported as null
+local function plain(v)
+    local t = type(v)
+    if t == "number" or t == "boolean" or t == "string" then
+        return v
+    end
+    return NULL
+end
+
+-- A UFunction's answer, or null if calling it fails
+local function ask(obj, method)
+    local ok, v = pcall(function() return obj[method](obj) end)
+    -- Not "ok and plain(v) or NULL", which turns an answer of false into null
+    if ok then
+        return plain(v)
+    end
+    return NULL
+end
+
+-- A TArray's items. UE4SS hands each to ForEach wrapped, and get() unwraps it
+local function items(arr)
+    local out = {}
+    arr:ForEach(function(_, item)
+        out[#out + 1] = item:get()
+    end)
+    return out
+end
+
 local ops = {}
 
 function ops.ping()
@@ -182,6 +211,9 @@ function ops.clock()
         measure = audio:GetCurrentMeasure(RAW),
         tick = audio:GetCurrentTick(RAW),
         bpm = audio:GetCurrentBPM(),
+        -- Where every disc's loop starts, in beats: a disc is that far past it, wrapped at
+        -- its length, which places its pickups on the clock
+        sync_beat = ask(audio, "GetDefaultSyncBeat"),
     }
 end
 
@@ -233,6 +265,16 @@ function ops.discs()
             -- Optional: a disc without them still plays, so a failure here costs only a check
             local ok_t, t = pcall(transposes, cel)
             disc.transposes = ok_t and t or NULL
+            -- The beats in its loop where a pickup drop can land, which some older custom
+            -- songs have none of
+            local ok_p, pickups = pcall(function()
+                local beats = array()
+                for i, beat in ipairs(items(cel.PickupBeats)) do
+                    beats[i] = plain(beat)
+                end
+                return beats
+            end)
+            disc.pickups = ok_p and pickups or NULL
             disc.has_major = hasAssets(cel, "MajorMidiSongAssets")
             disc.has_minor = hasAssets(cel, "MinorMidiSongAssets")
             local song = cel.song
@@ -292,35 +334,6 @@ function ops.solo(args)
     return { deck = args.deck, on = args.on == true }
 end
 
--- A number, boolean or string as is. Anything else, such as a struct a UFunction hands back,
--- would stop the response encoding, so it is reported as null
-local function plain(v)
-    local t = type(v)
-    if t == "number" or t == "boolean" or t == "string" then
-        return v
-    end
-    return NULL
-end
-
--- A UFunction's answer, or null if calling it fails
-local function ask(obj, method)
-    local ok, v = pcall(function() return obj[method](obj) end)
-    -- Not "ok and plain(v) or NULL", which turns an answer of false into null
-    if ok then
-        return plain(v)
-    end
-    return NULL
-end
-
--- A TArray's items. UE4SS hands each to ForEach wrapped, and get() unwraps it
-local function items(arr)
-    local out = {}
-    arr:ForEach(function(_, item)
-        out[#out + 1] = item:get()
-    end)
-    return out
-end
-
 local function shortNames(arr, field)
     local out = array()
     for _, obj in ipairs(items(arr)) do
@@ -378,16 +391,23 @@ end
 
 -- The song each goal of the set features, by goalPackage. A goal names it only as
 -- {RequiredSong}: the set lists its featured songs, and each section's config of a goal
--- holds an index into that list
+-- holds an index into that list. One goal can come back in a later section featuring
+-- another song, set 5's pickup goal first Push It and then Never Gonna Give You Up, so
+-- the song is the one of the section playing, or the last before it that had the goal
 local function featuredSongs()
-    local prompt = first("ShowFlowMgr")._curPrompt
+    local flow = first("ShowFlowMgr")
+    local prompt = flow._curPrompt
+    local current = ask(flow, "GetCurrentShowSectionIndex")
     local songs = items(prompt.FeaturedSongs)
     local byGoal = {}
-    for _, section in ipairs(items(prompt.ShowSections)) do
-        for _, config in ipairs(items(section.GoalsThisSection)) do
-            local data, song = config.ShowGoalData, songs[config.FeaturedSongIndex + 1]
-            if valid(data) and valid(song) and not byGoal[goalPackage(data)] then
-                byGoal[goalPackage(data)] = song.songShortName:ToString()
+    for i, section in ipairs(items(prompt.ShowSections)) do
+        local index = i - 1  -- FUSER counts sections from 0
+        if current == NULL or index <= current then
+            for _, config in ipairs(items(section.GoalsThisSection)) do
+                local data, song = config.ShowGoalData, songs[config.FeaturedSongIndex + 1]
+                if valid(data) and valid(song) then
+                    byGoal[goalPackage(data)] = song.songShortName:ToString()
+                end
             end
         end
     end
@@ -520,13 +540,39 @@ function ops.set_state()
     end)
     try("show", function()
         local flow = first("ShowFlowMgr")
-        return {
+        local show = {
             score = ask(flow, "GetScore"),
             section = ask(flow, "GetCurrentShowSectionIndex"),
             section_progress = ask(flow, "GetCurrentSectionProgress"),
             last_section = ask(flow, "IsInLastSection"),
             has_meter = ask(flow, "DoesCurrentSectionHaveCrowdMeter"),
+            -- The show's objects stay on the results screen, frozen, so a set that ended
+            -- still reads; FUSER counting it out is what says it is over
+            ending = ask(flow, "HasShowEndCountdownBeenBroadcast"),
         }
+        -- FShowScoreResults: the stars so far, and the points split by where they came
+        -- from, timing grades included
+        local ok, results = pcall(function()
+            local r = flow:GetScoringResults()
+            local points = r.PointsEarned
+            local out = {
+                stars = plain(r.StarsEarned), failed = plain(r.FailedShow),
+                requests = plain(r.NumRequestsSatisfied),
+                goal_actions = plain(r.NumGoalActionsSatisfied),
+                goals_percent = plain(r.PercentageOfGoalsCompleted),
+                requests_percent = plain(r.PercentageOfRequestsCompleted),
+                points = {},
+            }
+            for _, field in ipairs({ "RequestPoints", "RequestComboBonusPoints", "ShowGoalPoints",
+                                     "BadTimingBonusPoints", "EarlyTimingBonusPoints",
+                                     "LateTimingBonusPoints", "PerfectTimingBonusPoints",
+                                     "CrowdMeterPoints" }) do
+                out.points[field] = plain(points[field])
+            end
+            return out
+        end)
+        show.results = ok and results or NULL
+        return show
     end)
     return state
 end

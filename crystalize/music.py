@@ -12,6 +12,9 @@ KEYS = ("C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B")
 SHARPS = {"C#": "Db", "D#": "Eb", "F#": "Gb", "G#": "Ab", "A#": "Bb"}
 MAJOR, MINOR = 0, 1  # EKeyMode
 
+# FUSER's MIDI resolution: a disc's SongLengthTicks over this is its loop in beats
+TICKS_PER_BEAT = 480
+
 # ECelType. A disc is one of a song's four parts; lead is usually the vocal
 DISC_TYPES = ("beat", "bass", "loop", "lead")
 
@@ -174,6 +177,8 @@ def disc_index(songs_: list[dict], discs: list[dict]) -> dict[str, dict]:
                 "owned": song["owned"], "bpm": r.get("bpm"), "key": r.get("key"),
                 "mode": r.get("mode"), "transposes": r.get("transposes"),
                 "has_major": r.get("has_major"), "has_minor": r.get("has_minor"),
+                "pickups": r.get("pickups") or [],
+                "loop_beats": (r.get("length_ticks") or 0) / TICKS_PER_BEAT or None,
             }
     return index
 
@@ -182,9 +187,9 @@ def is_vocal(disc: dict) -> bool:
     return disc["type"] == "lead" and disc.get("instrument") in VOCALS
 
 
-def request_wants(f: dict | None) -> str | None:
-    """What a crowd request's FCelFilter asks for, in words. Its FilterTo says which of
-    the filter's fields counts: ECelFilterType."""
+def request_wants(f: dict | None, titles: dict | None = None) -> str | None:
+    """What a crowd request's FCelFilter asks for, in words, `titles` naming its songs by
+    id. Its FilterTo says which of the filter's fields counts: ECelFilterType."""
     if not f:
         return None
     kind = f.get("type")
@@ -197,7 +202,8 @@ def request_wants(f: dict | None) -> str | None:
     if kind == 3:
         return f"a disc from the {_named(YEAR_RANGES, f.get('years')) or 'years asked for'}"
     if kind == 5:
-        return "a disc from " + ", ".join(f.get("songs") or ["a song FUSER names"])
+        songs = [(titles or {}).get(song, song) for song in f.get("songs") or []]
+        return "a disc from " + ", ".join(songs or ["a song FUSER names"])
     if kind == 6:
         return "one of " + ", ".join(f.get("discs") or ["the discs FUSER names"])
     return None
@@ -214,6 +220,8 @@ def goal_text(name: str | None, song: str | None = None,
             name = name.replace("{Instrument}", _named(INSTRUMENTS, f["instrument"]))
         if f.get("type") == 2 and _named(GENRES, f.get("genre")):
             name = name.replace("{Genre}", _named(GENRES, f["genre"]))
+        if f.get("type") == 3 and _named(YEAR_RANGES, f.get("years")):
+            name = name.replace("{YearRange}", _named(YEAR_RANGES, f["years"]))
     for placeholder, words in GOAL_PLACEHOLDERS.items():
         name = name.replace(placeholder, words)
     name = _TYPED_INSTRUMENT.sub(

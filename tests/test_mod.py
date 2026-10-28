@@ -56,7 +56,7 @@ def test_discs(ask):
         "bpm": 120, "instrument": 3, "song": "callmemaybe", "artist": "Carly Rae Jepsen",
         "genre": 6, "year": 2012, "owned": True, "length_ticks": 30720,
         "transposes": [-5, -6, 5, 4, 3, 2, 1, 0, -1, -2, -3, -4],
-        "has_major": True, "has_minor": False,
+        "has_major": True, "has_minor": False, "pickups": [15, 28.5],
     }
     assert [(d["name"], d["owned"]) for d in body["result"]] == [
         ("callmemaybebt", True), ("callmemaybebs", True), ("kingsandqueensbt", False)]
@@ -67,7 +67,8 @@ def test_clock(ask):
     assert body["ok"]
     # The fake records the calls rather than run them, so this checks they are made raw
     assert [(c["method"], c["args"]) for c in calls] == [
-        ("GetCurrentBeat", [0]), ("GetCurrentMeasure", [0]), ("GetCurrentTick", [0])]
+        ("GetCurrentBeat", [0]), ("GetCurrentMeasure", [0]), ("GetCurrentTick", [0]),
+        ("GetDefaultSyncBeat", [])]
 
 
 def test_drop_plays_through_desk_state(ask):
@@ -166,6 +167,9 @@ def test_set_state(ask):
     assert state["crowd"] == {"CurHealth": 62, "MaxHealth": 100, "CurHealthState": 2,
                               "WarningCount": 0}
     assert state["show"]["score"] == 1500
+    assert state["show"]["ending"] is False
+    results = state["show"]["results"]
+    assert results["stars"] == 2.5 and results["points"]["PerfectTimingBonusPoints"] == 800
 
 
 def test_set_state_reads_each_part_alone(ask):

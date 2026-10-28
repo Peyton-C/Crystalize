@@ -34,6 +34,25 @@ INSTRUCTIONS = (
 # server plans from the saved library and tries the game again only this often
 OFFLINE_RETRY_SECONDS = 30
 
+# How often await_event reads the set. A read is one round trip, about 40 ms, and shares the
+# bridge with the player's clock, so twice a second leaves the clock most of it
+AWAIT_POLL_SECONDS = 0.5
+# Longest an await_event call blocks, under what MCP clients wait for a tool before giving up
+AWAIT_MAX_SECONDS = 60
+# Unanswered reads in a row before await_event gives up on FUSER
+AWAIT_MISSES = 3
+# A request this many measures from its end is reported as ending: about 8 seconds at 120
+# BPM, time for a search and a drop timed to the downbeat
+ENDING_MEASURES = 4
+# FShowScoring's fields, by the names get_set gives them
+POINTS = {"requests": "RequestPoints", "request_combos": "RequestComboBonusPoints",
+          "goals": "ShowGoalPoints", "perfect_timing": "PerfectTimingBonusPoints",
+          "early_timing": "EarlyTimingBonusPoints", "late_timing": "LateTimingBonusPoints",
+          "bad_timing": "BadTimingBonusPoints", "crowd_meter": "CrowdMeterPoints"}
+# The meter level await_event warns below unless told otherwise. It drains a point a
+# second once idle, so this is half a minute from failing the set
+METER_LOW = 30
+
 DECK = {"type": "integer", "minimum": 1, "maximum": 4, "description": "1 to 4"}
 KEY = {"type": "string", "description": "Ab for A flat major, Abm for minor"}
 
@@ -79,6 +98,20 @@ TOOLS = [
                        "mix's bars. A goal's text may keep a placeholder such as {Transition} "
                        "the mod cannot read yet.",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "await_event",
+        "description": "In a campaign set, wait until something happens and say what: a "
+                       "request coming, starting, ending within a few measures, passing or "
+                       "failing; a goal starting, done, or ending undone; the crowd meter "
+                       "coming on or falling below `meter_below`; the set ending; keep_alive "
+                       "stopping. Returns at once with anything since you last looked, else "
+                       "waits up to `seconds`, and gives get_set's view of the set with it. "
+                       "Call it between actions instead of polling get_set.",
+        "inputSchema": {"type": "object", "properties": {
+            "seconds": {"type": "number", "description": f"Default 20, at most {AWAIT_MAX_SECONDS}"},
+            "meter_below": {"type": "integer", "description": f"Default {METER_LOW}"},
+        }},
     },
     {
         "name": "search_songs",
@@ -223,7 +256,11 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {"disc": {"type": "string", "description": "A disc name"},
-                           "deck": DECK, "queue": {"type": "boolean"}},
+                           "deck": DECK, "queue": {"type": "boolean"},
+                           "on_pickup": {"type": "boolean",
+                                         "description": "Land on the disc's next pickup, "
+                                                        "where it comes in ahead of the bar, "
+                                                        "instead of the downbeat"}},
             "required": ["disc", "deck"],
         },
     },
@@ -234,7 +271,7 @@ TOOLS = [
     },
     {
         "name": "eject",
-        "description": "Stop a deck and take its disc off.",
+        "description": "Stop a deck and take its disc off, at the end of the bar.",
         "inputSchema": {"type": "object", "properties": {"deck": DECK}, "required": ["deck"]},
     },
     {
@@ -251,13 +288,13 @@ TOOLS = [
     },
     {
         "name": "mute_deck",
-        "description": "Mute or unmute a deck without taking its disc off.",
+        "description": "Mute or unmute a deck without taking its disc off, from the next bar.",
         "inputSchema": {"type": "object", "properties": {"deck": DECK, "mute": {"type": "boolean"}},
                         "required": ["deck", "mute"]},
     },
     {
         "name": "solo_deck",
-        "description": "Solo or unsolo a deck.",
+        "description": "Solo or unsolo a deck, from the next bar.",
         "inputSchema": {"type": "object", "properties": {"deck": DECK, "solo": {"type": "boolean"}},
                         "required": ["deck", "solo"]},
     },
@@ -338,6 +375,11 @@ class Server:
         self._songs_session = None
         self._offline_since = None
         self._calls: list[threading.Thread] = []
+        # The set as the agent last saw it, through get_set or await_event, so an event
+        # that happened while it was busy is still reported once
+        self._seen: dict | None = None
+        self._warned: set = set()  # requests already reported as ending
+        self._keep_error = None  # the keep-alive failure already reported
 
     # ------------------------------------------------------------------ protocol
 
@@ -516,6 +558,119 @@ class Server:
 
     def _tool_get_set(self, args: dict) -> dict:
         raw = self.bridge.call("set_state")
+        self._seen = raw
+        return self._set_view(raw)
+
+    def _tool_await_event(self, args: dict) -> dict:
+        seconds = args.get("seconds")
+        seconds = min(max(float(20 if seconds is None else seconds), 0), AWAIT_MAX_SECONDS)
+        below = args.get("meter_below", METER_LOW)
+        deadline = time.monotonic() + seconds
+        missed = 0
+        while True:
+            try:
+                raw = self.bridge.call("set_state")
+                missed = 0
+            except GameError:
+                # FUSER now and then leaves one read unanswered and takes the next
+                missed += 1
+                if missed >= AWAIT_MISSES:
+                    raise
+                time.sleep(AWAIT_POLL_SECONDS)
+                continue
+            events = self._events(self._seen, raw, below)
+            self._seen = raw
+            if events or time.monotonic() >= deadline:
+                return {"events": events, "set": self._set_view(raw)}
+            time.sleep(AWAIT_POLL_SECONDS)
+
+    def _events(self, before: dict | None, after: dict, below) -> list[dict]:
+        """What changed between two reads of the set, in get_set's words. Requests and
+        goals are matched by their place in FUSER's lists, which only ever grow."""
+        events = []
+        measure = after.get("measure")
+        old_requests = (before or {}).get("requests") or []
+        for i, r in enumerate(after.get("requests") or []):
+            was = old_requests[i].get("state") if i < len(old_requests) else None
+            now = r.get("state")
+            name = music._named(music.REQUEST_STATES, now)
+            entry = self._request_entry(r, measure)
+            key = (r.get("start_measure"), r.get("bars"))
+            if was is None and name == "scheduled":
+                events.append({"event": "request_coming", **entry})
+            elif name == "active" and was != now:
+                events.append({"event": "request_started", **entry})
+            elif name in ("passed", "failed") and was is not None and \
+                    music._named(music.REQUEST_STATES, was) in music.OPEN_REQUESTS:
+                events.append({"event": f"request_{name}", **entry})
+            left = entry.get("measures_left")
+            if name == "active" and left is not None and left <= ENDING_MEASURES \
+                    and key not in self._warned:
+                self._warned.add(key)
+                events.append({"event": "request_ending", **entry})
+
+        old_goals = (before or {}).get("goals") or []
+        titles = self._titles(after.get("goals") or [])
+        for i, g in enumerate(after.get("goals") or []):
+            old = old_goals[i] if i < len(old_goals) else None
+            done, ended = g.get("completed") is True, g.get("active") is False
+            text = self._goal_text(g, titles)
+            if old is None:
+                if not done and not ended:
+                    events.append({"event": "goal_started", "goal": text})
+            elif done and old.get("completed") is not True:
+                events.append({"event": "goal_done", "goal": text})
+            elif ended and not done and old.get("active") is not False:
+                events.append({"event": "goal_ended", "goal": text})
+
+        show, old_show = after.get("show") or {}, (before or {}).get("show") or {}
+        if show.get("has_meter") is True and old_show.get("has_meter") is not True:
+            events.append({"event": "meter_on"})
+        meter, old_meter = _meter(after), _meter(before or {})
+        if isinstance(below, (int, float)) and meter is not None and meter < below \
+                and (old_meter is None or old_meter >= below):
+            events.append({"event": "meter_low", "crowd_meter": meter})
+        # The set's objects stay readable on the results screen, so the end is FUSER
+        # counting the show out, or failing that the set no longer reading at all
+        ending, was_ending = show.get("ending") is True, old_show.get("ending") is True
+        unread = bool(before) and before.get("goals") is not None and after.get("goals") is None
+        if (ending and not was_ending and before is not None) or unread:
+            event = {"event": "set_ended"}
+            stars = (show.get("results") or {}).get("stars")
+            if isinstance(stars, (int, float)):
+                event["stars"] = round(stars, 2)
+            events.append(event)
+
+        keeping = self.player.keep_alive_status() or {}
+        if keeping.get("error") and keeping["error"] != self._keep_error:
+            self._keep_error = keeping["error"]
+            events.append({"event": "keep_alive_stopped", "error": keeping["error"]})
+        return events
+
+    def _titles(self, goals: list) -> dict:
+        if not any(g.get("song") for g in goals):
+            return {}
+        return {song["id"]: song["title"] for song in self._library()}
+
+    def _request_entry(self, r: dict, measure) -> dict:
+        state = music._named(music.REQUEST_STATES, r.get("state"))
+        start, bars = r.get("start_measure"), r.get("bars")
+        ends = start + bars if isinstance(start, int) and isinstance(bars, int) else None
+        f = r.get("filter")
+        titles = {song["id"]: song["title"] for song in self._library()} \
+            if f and f.get("songs") else {}
+        entry = {"state": state, "wants": music.request_wants(f, titles),
+                 "starts": start, "ends": ends}
+        if state == "active" and ends is not None and isinstance(measure, int):
+            entry["measures_left"] = ends - measure
+        return {k: v for k, v in entry.items() if v is not None}
+
+    @staticmethod
+    def _goal_text(g: dict, titles: dict) -> str | None:
+        return music.goal_text(g.get("name"), titles.get(g.get("song"), g.get("song")),
+                               g.get("filters")) or g.get("description")
+
+    def _set_view(self, raw: dict) -> dict:
         measure = raw.get("measure")
         result: dict = {"measure": measure}
 
@@ -527,13 +682,7 @@ class Server:
                     if state in settled:
                         settled[state] += 1
                     continue
-                start, bars = r.get("start_measure"), r.get("bars")
-                ends = start + bars if isinstance(start, int) and isinstance(bars, int) else None
-                entry = {"state": state, "wants": music.request_wants(r.get("filter")),
-                         "starts": start, "ends": ends}
-                if state == "active" and ends is not None and isinstance(measure, int):
-                    entry["measures_left"] = ends - measure
-                open_.append({k: v for k, v in entry.items() if v is not None})
+                open_.append(self._request_entry(r, measure))
             result["requests"] = open_
             result["requests_settled"] = settled
 
@@ -541,16 +690,12 @@ class Server:
             # A goal the show has used is up unless it is done; the mod's active mark is
             # null when it cannot read FUSER's map of active goals
             goals, done = [], 0
-            titles = {}
-            if any(g.get("song") for g in raw["goals"]):
-                titles = {song["id"]: song["title"] for song in self._library()}
+            titles = self._titles(raw["goals"])
             for g in raw["goals"]:
                 if g.get("completed") is True or g.get("active") is False:
                     done += g.get("completed") is True
                     continue
-                entry = {"goal": music.goal_text(g.get("name"), titles.get(g.get("song"), g.get("song")),
-                                                 g.get("filters"))
-                         or g.get("description"),
+                entry = {"goal": self._goal_text(g, titles),
                          "done": g.get("performed"), "of": g.get("required")}
                 if g.get("bars"):
                     entry["bars"], entry["bars_done"] = g["bars"], g.get("completed_bars")
@@ -564,9 +709,8 @@ class Server:
         # Before the meter is on, its widget holds its starting values, which read like a
         # meter already in play
         crowd = (raw.get("crowd") or {}) if show.get("has_meter") is not False else {}
-        health, most = crowd.get("CurHealth"), crowd.get("MaxHealth")
-        if isinstance(health, (int, float)) and isinstance(most, (int, float)) and most > 0:
-            result["crowd_meter"] = round(health / most * 100)
+        if _meter(raw) is not None:
+            result["crowd_meter"] = _meter(raw)
         band = music._named(music.CROWD_STATES, crowd.get("CurHealthState"))
         if band:
             result["crowd"] = band
@@ -578,6 +722,15 @@ class Server:
             result["freshness"] = round((value - low) / (high - low) * 100)
         if show.get("score") is not None:
             result["score"] = show["score"]
+        results = show.get("results") or {}
+        if isinstance(results.get("stars"), (int, float)):
+            result["stars"] = round(results["stars"], 2)
+        points = results.get("points") or {}
+        named = {name: points.get(field) for name, field in POINTS.items()}
+        if any(isinstance(v, int) for v in named.values()):
+            result["points"] = {k: v for k, v in named.items() if isinstance(v, int)}
+        if show.get("ending") is True:
+            result["ended"] = True
         if raw.get("problems"):
             # Said rather than hidden, so a part FUSER moved shows up as missing, not empty
             result["unreadable"] = raw["problems"]
@@ -736,6 +889,18 @@ class Server:
             drop = {"name": disc, "deck": _deck(args), "queue": bool(args.get("queue"))}
             if drop["queue"]:
                 self.bridge.call("drop", **drop)
+            elif args.get("on_pickup"):
+                pickups = (known or {}).get("pickups")
+                loop = (known or {}).get("loop_beats")
+                if not pickups or not loop:
+                    # Older custom songs were made without them
+                    raise GameError(f"{disc} has no pickups to drop on; drop it on the downbeat")
+                # Queued first, so the disc is on the deck and loaded when the pickup comes,
+                # as one in the player's hand is: spawned at the pickup itself, FUSER can
+                # only bring it in at the next bar
+                self.bridge.call("drop", **{**drop, "queue": True})
+                target = self.player.on_pickup([("drop_queue", {})], pickups, loop)
+                aimed = round(target % loop, 2)
             else:
                 # Timed as play_mix times its bars, so the campaign counts it on the downbeat
                 self.player.on_downbeat([("drop", drop)])
@@ -743,15 +908,20 @@ class Server:
             if "no disc named" in str(e):
                 raise GameError(f"FUSER has no disc named {disc}, search_songs lists them") from e
             raise
-        return {"deck": args["deck"], "disc": self._describe(disc),
-                "queued": bool(args.get("queue"))}
+        result = {"deck": args["deck"], "disc": self._describe(disc),
+                  "queued": bool(args.get("queue"))}
+        if args.get("on_pickup") and not args.get("queue"):
+            # The beat in the disc's loop it was aimed at, to tell one pickup from another
+            result["pickup_beat"] = aimed
+        return result
 
     def _tool_drop_queue(self, args: dict) -> dict:
         self.player.on_downbeat([("drop_queue", {})])
         return {"dropped": True}
 
     def _tool_eject(self, args: dict) -> dict:
-        self.bridge.call("eject", deck=_deck(args))
+        # On the downbeat, so the disc stops at the end of a bar rather than partway in
+        self.player.on_downbeat([("eject", {"deck": _deck(args)})])
         return {"deck": args["deck"], "ejected": True}
 
     def _tool_set_key(self, args: dict) -> dict:
@@ -767,12 +937,24 @@ class Server:
         return {"bpm": bpm}
 
     def _tool_mute_deck(self, args: dict) -> dict:
-        self.bridge.call("mute", deck=_deck(args), on=bool(args["mute"]))
+        self.player.on_downbeat([("mute", {"deck": _deck(args), "on": bool(args["mute"])})])
         return {"deck": args["deck"], "muted": bool(args["mute"])}
 
     def _tool_solo_deck(self, args: dict) -> dict:
-        self.bridge.call("solo", deck=_deck(args), on=bool(args["solo"]))
+        self.player.on_downbeat([("solo", {"deck": _deck(args), "on": bool(args["solo"])})])
         return {"deck": args["deck"], "soloed": bool(args["solo"])}
+
+
+def _meter(raw: dict) -> int | None:
+    """The crowd meter from 0 to 100, or None before it is on. Until then its widget holds
+    its starting values, which read like a meter already in play."""
+    if (raw.get("show") or {}).get("has_meter") is False:
+        return None
+    crowd = raw.get("crowd") or {}
+    health, most = crowd.get("CurHealth"), crowd.get("MaxHealth")
+    if isinstance(health, (int, float)) and isinstance(most, (int, float)) and most > 0:
+        return round(health / most * 100)
+    return None
 
 
 def _near(a: dict, b: dict) -> bool:

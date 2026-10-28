@@ -335,3 +335,34 @@ def test_keep_alive_stops_when_fuser_is_gone():
     p.keep_alive(POOL)
     wait_until(lambda: not p.keep_alive_status()["on"])
     assert p.keep_alive_status()["error"] == "FUSER is not running"
+
+
+def test_on_pickup_aims_at_the_next_pickup_past_the_sync_beat():
+    # The loops start at beat 3, so pickup 15 of a 128-beat loop falls on clock beat 18
+    fuser = ClockBridge(beat=10.0)
+    real = fuser.call
+    fuser.call = lambda op, **args: {**real(op, **args), "sync_beat": 3} if op == "clock" \
+        else real(op, **args)
+    p = Player(fuser)
+    drop = ("drop", {"name": "pushitld", "deck": 2, "queue": False})
+    result = []
+    sender = threading.Thread(target=lambda: result.append(
+        p.on_pickup([drop], [15, 28.5], 128)))
+    sender.start()
+    time.sleep(0.02)
+    assert fuser.sent == []
+    fuser.to(17.97)
+    sender.join(2)
+    assert result[0] == pytest.approx(18, abs=0.01) and fuser.sent[0][1] == "drop"
+
+
+def test_on_pickup_wraps_into_the_next_loop():
+    fuser = ClockBridge(beat=127.0)  # past the last pickup, 28.5: next is 128 + 15
+    p = Player(fuser)
+    sender = threading.Thread(target=p.on_pickup,
+                              args=([("drop", {"name": "x", "deck": 0, "queue": False})],
+                                    [15, 28.5], 128))
+    sender.start()
+    fuser.to(142.98)
+    sender.join(2)
+    assert fuser.sent and fuser.sent[0][0] == 142.98
