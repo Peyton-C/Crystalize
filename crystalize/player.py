@@ -65,6 +65,11 @@ class Player:
         self._keep_stop = threading.Event()
         self._keep_status: dict = {}
         self._sync_beat = 0.0
+        # Every mix heard this session, as the discs on the decks together, and how often
+        # each disc has been dropped: freshness rewards a mix that is new
+        self._heard: set[frozenset] = set()
+        self._played: dict[str, int] = {}
+        self._deck_since: dict[int, float] = {}  # when the keep-alive last changed each deck
 
     def start(self, name: str, schedule: list, end_bar: int, opening_decks: set[int]) -> None:
         """Play `schedule`, a Plan's, stopping any mix already playing. `opening_decks`
@@ -91,18 +96,22 @@ class Player:
         with self._lock:
             return dict(self._status) if self._status else None
 
-    def keep_alive(self, pool: list[tuple[str, int]]) -> None:
+    def keep_alive(self, pool: list[tuple[str, int]], change_count: bool = False) -> None:
         """Keep the crowd meter from draining while nothing else changes the mix: at the
-        first downbeat KEEP_ALIVE_BARS after the last action, drop the next disc of `pool`,
+        first downbeat KEEP_ALIVE_BARS after the last action, drop a disc of `pool`,
         (disc, deck) pairs, that is neither on a deck nor one the crowd remembers. It waits
-        while a mix plays, and skips a bar that would make the set overactive."""
+        while a mix plays, and skips a bar that would make the set overactive.
+
+        With `change_count`, it takes turns ejecting the pool's longest-playing deck and
+        filling a pool deck left empty, so every change also changes how many decks play,
+        which freshness pays for on top of a new mix."""
         self.stop_keep_alive()
         self._keep_stop = threading.Event()
         with self._lock:
             self._keep_status = {"on": True, "discs": len(pool), "dropped": 0, "last": None,
                                  "waiting": None, "error": None}
-        self._keeper = threading.Thread(target=self._keep, args=(pool, self._keep_stop),
-                                        daemon=True)
+        self._keeper = threading.Thread(target=self._keep,
+                                        args=(pool, self._keep_stop, change_count), daemon=True)
         self._keeper.start()
 
     def stop_keep_alive(self) -> None:
@@ -233,13 +242,18 @@ class Player:
             for op, args in commands:
                 if op == "drop" and not args.get("queue"):
                     self._dropped = (self._dropped + [args["name"]])[-REMEMBERED_DISCS:]
+                    self._played[args["name"]] = self._played.get(args["name"], 0) + 1
 
-    def _keep(self, pool, stop) -> None:
+    def _hear(self, decks: list) -> None:
+        with self._lock:
+            self._heard.add(_mix(decks))
+
+    def _keep(self, pool, stop, change_count=False) -> None:
         turn, missed = 0, 0
         try:
             while not stop.is_set():
                 try:
-                    turn = self._keep_turn(pool, turn, stop)
+                    turn = self._keep_turn(pool, turn, stop, change_count)
                     missed = 0
                 except GameError as e:
                     # FUSER now and then leaves one command unanswered and takes the next,
@@ -258,9 +272,9 @@ class Player:
             with self._lock:
                 self._keep_status["on"] = False
 
-    def _keep_turn(self, pool, turn, stop) -> int:
-        """One look at the clock, and a drop if one is due. Returns the turn to start the
-        next pick from."""
+    def _keep_turn(self, pool, turn, stop, change_count=False) -> int:
+        """One look at the clock, and a drop or an eject if one is due. Returns the turn to
+        start the next pick from."""
         if self._thread and self._thread.is_alive():
             stop.wait(POLL_SECONDS)  # a mix keeps the crowd busy enough
             return turn
@@ -281,12 +295,35 @@ class Player:
         pick = None
         if (last is None or lands - last >= idle) and busy < BUSY_ACTIONS:
             state = self.bridge.call("state")
-            held = {d.get("playing") for d in state["decks"] if d}
+            decks = [d.get("playing") if d else None for d in state["decks"]]
+            self._hear(decks)
+            # Freshness pays most for a mix not heard yet, so of the discs the crowd would
+            # take, the one that makes a new mix wins, then the one dropped least, then the
+            # next in turn. A few discs cycled over two decks soon run out of new mixes
+            best = None
+            own = sorted({deck for _, deck in pool})
+            empty = [deck for deck in own if not decks[deck]]
+            if change_count and not empty and len(own) > 1:
+                # Every pool deck is full: take the one playing longest off
+                with self._lock:
+                    deck = min(own, key=lambda d: self._deck_since.get(d, 0))
+                best = ((), ("eject", None, deck), turn)
             for i in range(len(pool)):
                 disc, deck = pool[(turn + i) % len(pool)]
-                if disc not in held and disc not in remembered:
-                    pick, turn = (disc, deck), (turn + i + 1) % len(pool)
+                if best and best[1][0] == "eject":
                     break
+                if disc in decks or disc in remembered:
+                    continue
+                if change_count and empty and deck not in empty:
+                    continue  # an empty deck is filled first, which changes the count
+                mix = list(decks)
+                mix[deck] = disc
+                with self._lock:
+                    rank = (_mix(mix) in self._heard, self._played.get(disc, 0), i)
+                if best is None or rank < best[0]:
+                    best = (rank, ("drop", disc, deck), (turn + i + 1) % len(pool))
+            if best:
+                _, pick, turn = best
             with self._lock:
                 self._keep_status["waiting"] = None if pick else \
                     "every disc is on a deck or one the crowd remembers"
@@ -298,11 +335,26 @@ class Player:
         wait = _wait(downbeat, beat, per_second, trip)
         if wait > 0 and stop.wait(wait):
             return turn
-        self._send([("drop", {"name": pick[0], "deck": pick[1], "queue": False})])
+        kind, disc, deck = pick
+        if kind == "eject":
+            self._send([("eject", {"deck": deck})])
+        else:
+            self._send([("drop", {"name": disc, "deck": deck, "queue": False})])
+        mix = list(decks)
+        mix[deck] = disc
+        self._hear(mix)
         with self._lock:
-            self._keep_status["dropped"] += 1
-            self._keep_status["last"] = {"disc": pick[0], "deck": pick[1]}
+            self._deck_since[deck] = time.monotonic()
+            self._keep_status["dropped" if kind == "drop" else "ejected"] = \
+                self._keep_status.get("dropped" if kind == "drop" else "ejected", 0) + 1
+            self._keep_status["last"] = {"disc": disc, "deck": deck} if kind == "drop" \
+                else {"ejected": True, "deck": deck}
         return turn
+
+def _mix(decks) -> frozenset:
+    """A mix as freshness tells mixes apart, by its discs, whichever decks they are on."""
+    return frozenset(d for d in decks if d)
+
 
 def _next_downbeat(beat: float, per_second: float, trip: float) -> int:
     """The first downbeat a command sent now can still reach."""

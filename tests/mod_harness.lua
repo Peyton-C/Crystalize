@@ -61,6 +61,15 @@ local function tarrayOf(list)
     end }
 end
 
+-- A TMap as UE4SS's Lua hands one over: ForEach passes the key wrapped as well as the value
+local function tmapOf(entries)
+    return { ForEach = function(_, fn)
+        for _, kv in ipairs(entries) do
+            fn({ get = function() return kv[1] end }, { get = function() return kv[2] end })
+        end
+    end }
+end
+
 local function cel(short, celType, of)
     return object(short, {
         shortName = name(short), Title = name("Call Me Maybe"), CelType = celType,
@@ -175,7 +184,8 @@ local world = {
                 }) },
             }),
         }) }) },
-    BP_Crowd_Manager_C = { object("Crowd", { CurrentCrowdMeterState = 1 }) },
+    BP_Crowd_Manager_C = { object("Crowd", { CurrentCrowdMeterState = 1,
+        Thresholds = tmapOf({ { 3, 1 }, { 2, 0.75 } }) }) },
     ShowPrompt = { object("ShowPrompt", { FeaturedSongs = tarrayOf({ casbah }) }) },
     -- As in FUSER: a template comes first, frozen at its defaults; the one on screen was
     -- made at runtime

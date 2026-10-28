@@ -556,6 +556,14 @@ function ops.set_state()
             -- The show's objects stay on the results screen, frozen, so a set that ended
             -- still reads; FUSER counting it out is what says it is over
             ending = ask(flow, "HasShowEndCountdownBeenBroadcast"),
+            -- The points a section ends on for each band of the meter, which say what band
+            -- the crowd-meter points came from
+            meter_bonus = {
+                low = ask(flow, "GetCrowdMeterLowHealthBonus"),
+                medium = ask(flow, "GetCrowdMeterMediumHealthBonus"),
+                high = ask(flow, "GetCrowdMeterHighHealthBonus"),
+                peak = ask(flow, "GetCrowdMeterPeakHealthBonus"),
+            },
         }
         -- FShowScoreResults: the stars so far, and the points split by where they came
         -- from, timing grades included
@@ -601,12 +609,26 @@ local function readFields(obj, fields)
     for _, field in ipairs(fields or {}) do
         local ok, v = pcall(function() return obj[field] end)
         local listed, list = false, nil
+        local mapped, map = false, nil
         if ok and plain(v) == NULL then
-            -- A TArray, or a TMap's values, item by item: a featured song is one of these
-            listed, list = pcall(items, v)
+            -- A TMap, whose ForEach hands the key wrapped as it does the value, as pairs, so
+            -- a map keyed by an enum says which entry is which
+            mapped, map = pcall(function()
+                local pairs_ = array()
+                v:ForEach(function(key, value)
+                    pairs_[#pairs_ + 1] = array({ readable(key:get()), readable(value:get()) })
+                end)
+                return pairs_
+            end)
+            if not mapped then
+                -- A TArray, item by item: a featured song is one of these
+                listed, list = pcall(items, v)
+            end
         end
         if not ok then
             out[field] = NULL
+        elseif mapped then
+            out[field] = map
         elseif listed then
             local named = array()
             for i, item in ipairs(list) do

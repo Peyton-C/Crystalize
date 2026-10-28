@@ -232,9 +232,10 @@ TOOLS = [
     {
         "name": "keep_alive",
         "description": "In a campaign set, keep the crowd meter from draining while you think: "
-                       "3 bars after the last change, Crystalize drops the next of these discs "
-                       "on its deck, never one already on a deck or one of the last 3 dropped, "
-                       "and never so often the crowd calls it overactive. Give at least 4, "
+                       "3 bars after the last change, Crystalize drops one of these discs on "
+                       "its deck, choosing one that makes a mix not heard this session, then "
+                       "the one dropped least, never one already on a deck or one of the last 3 dropped, "
+                       "and never so often the crowd calls it overactive. Give at least 4, and 12 or more keeps the mix fresh, "
                        "discs that can swap in for each other without spoiling the mix, such "
                        "as two beats on one deck and two loops on another. It waits while a "
                        "mix plays. With `stop`, it stops.",
@@ -244,6 +245,12 @@ TOOLS = [
                 "discs": {"type": "array", "items": {
                     "type": "object", "properties": {"disc": {"type": "string"}, "deck": DECK},
                     "required": ["disc", "deck"]}},
+                "change_count": {"type": "boolean",
+                                 "description": "Take turns ejecting one of these discs' "
+                                                "decks and filling it again, so each change "
+                                                "also changes how many decks play, which "
+                                                "freshness pays for. Not during a goal that "
+                                                "counts discs"},
                 "stop": {"type": "boolean"},
             },
         },
@@ -380,9 +387,10 @@ PROMPTS = [
             "song is named with its artist, and two songs can share a title, so query both. When "
             "two requests are open, one disc that fills an instrument and a song earns a combo "
             "bonus. Never drop one of the last 3 discs: the crowd counts it a repeat.\n"
-            "5. Once the crowd meter is on, keep_alive holds it up while you work. Give it 6 to 8 "
-            "discs on the decks your goals are not using, such as beats on one and loops on "
-            "another, and give it a new list when a goal needs those decks or a kind of disc "
+            "5. Once the crowd meter is on, keep_alive holds it up while you work. Give it 12 or "
+            "more discs on the decks your goals are not using, such as beats on one and loops "
+            "on another: freshness pays most for a mix not heard yet, and few discs soon run "
+            "out of them, and give it a new list when a goal needs those decks or a kind of disc "
             "they would replace. Later sets want the mix changing all the time, and an eject "
             "counts as a change.\n"
             "6. At set_ended, keep_alive with stop, and say the stars and what cost points: "
@@ -924,8 +932,8 @@ class Server:
             raise ValueError(f"keep_alive needs at least {REMEMBERED + 1} different discs, so "
                              f"one is always fresh to the crowd")
         self.bridge.call("ping")
-        self.player.keep_alive(pool)
-        return {"keep_alive": True, "discs": len(pool)}
+        self.player.keep_alive(pool, bool(args.get("change_count")))
+        return {"keep_alive": True, "discs": len(pool), "change_count": bool(args.get("change_count"))}
 
     def _tool_drop_disc(self, args: dict) -> dict:
         disc = str(args["disc"])

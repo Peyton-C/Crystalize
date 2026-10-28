@@ -366,3 +366,47 @@ def test_on_pickup_wraps_into_the_next_loop():
     fuser.to(142.98)
     sender.join(2)
     assert fuser.sent and fuser.sent[0][0] == 142.98
+
+
+def test_keep_alive_picks_a_mix_not_heard_yet():
+    # a or b on deck 0 beside y makes a mix heard before; c on deck 1 beside x does not
+    fuser = ClockBridge(beat=3.95, playing=("x", "y", None, None))
+    p = Player(fuser)
+    p._heard = {frozenset({"a", "y"}), frozenset({"b", "y"})}
+    p.keep_alive(POOL)
+    wait_until(lambda: len(fuser.sent) == 1)
+    assert fuser.sent[0][2]["name"] == "c"
+    p.stop_keep_alive()
+
+
+def test_keep_alive_prefers_the_disc_dropped_least():
+    fuser = ClockBridge(beat=3.95, playing=("x", "y", None, None))
+    p = Player(fuser)
+    p._heard = {frozenset({n, "y"}) for n in "ab"} | {frozenset({"x", n}) for n in "cd"}
+    p._played = {"a": 3, "b": 1, "c": 2, "d": 2}
+    p.keep_alive(POOL)
+    wait_until(lambda: len(fuser.sent) == 1)
+    assert fuser.sent[0][2]["name"] == "b"
+    p.stop_keep_alive()
+
+
+def test_change_count_ejects_a_full_pool_deck_then_fills_it(monkeypatch):
+    monkeypatch.setattr(player_module, "KEEP_ALIVE_BARS", 0)
+    fuser = ClockBridge(beat=3.95, playing=("x", "y", None, None))
+    real = fuser.call
+
+    def call(op, **args):  # an eject empties its deck, as in FUSER
+        result = real(op, **args)
+        for c in args.get("commands", []):
+            if c["op"] == "eject":
+                fuser.playing[c["args"]["deck"]] = None
+        return result
+    fuser.call = call
+    p = Player(fuser)
+    p.keep_alive(POOL, change_count=True)
+    wait_until(lambda: len(fuser.sent) == 2)
+    assert fuser.sent[0][1] == "eject"  # decks 0 and 1, the pool's, are both full
+    ejected = fuser.sent[0][2]["deck"]
+    op, args = fuser.sent[1][1:]
+    assert op == "drop" and args["deck"] == ejected
+    p.stop_keep_alive()

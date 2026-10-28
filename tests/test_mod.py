@@ -194,6 +194,11 @@ def test_read_array(ask):
     assert body["result"] == {"FeaturedSongs": ["CelSongSet /Game/Audio/Songs/rockthecasbah"]}
 
 
+def test_read_map_gives_pairs(ask):
+    body, _ = ask("read", **{"class": "BP_Crowd_Manager_C", "fields": ["Thresholds"]})
+    assert body["result"] == {"Thresholds": [[3, 1], [2, 0.75]]}
+
+
 def test_read_all(ask):
     body, _ = ask("read", **{"class": "WBP_ShowsCrowdMeter_C", "fields": ["CurHealth"], "all": True})
     assert [(r["CurHealth"], "/Engine/Transient" in r["(object)"]) for r in body["result"]] == [
