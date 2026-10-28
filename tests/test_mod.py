@@ -157,8 +157,9 @@ def test_set_state(ask):
     # false, not null: an answer of false must not fall through to the fallback
     assert (open_["completed"], open_["active"], open_["kind"]) == (False, True, "ShowGoalQuota")
     assert state["freshness"] == {"value": 0.5, "min": 0, "max": 1}
-    assert state["crowd"] == {"CurHealth": 30, "MaxHealth": 100, "CurHealthState": 1,
-                              "WarningCount": 1}
+    # The live meter, not the first one found, which sits frozen at its defaults
+    assert state["crowd"] == {"CurHealth": 62, "MaxHealth": 100, "CurHealthState": 2,
+                              "WarningCount": 0}
     assert state["show"]["score"] == 1500
 
 
@@ -176,6 +177,18 @@ def test_read_fields(ask):
                                  "fields": ["CurrentCrowdMeterState", "_label"]})
     assert body["result"] == {"CurrentCrowdMeterState": 1, "_label": "Crowd"}
     assert calls == []  # read only: nothing in the game is called
+
+
+def test_read_all(ask):
+    body, _ = ask("read", **{"class": "WBP_ShowsCrowdMeter_C", "fields": ["CurHealth"], "all": True})
+    assert [(r["CurHealth"], "/Engine/Transient" in r["(object)"]) for r in body["result"]] == [
+        (30, False), (62, True)]
+
+
+def test_set_state_without_a_live_meter(ask):
+    body, _ = ask("set_state", missing="WBP_ShowsCrowdMeter_C")
+    state = body["result"]
+    assert state["crowd"] is None and "crowd: no crowd meter has started" in state["problems"]
 
 
 def test_read_unreadable_field_is_null(ask):

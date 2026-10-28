@@ -437,8 +437,20 @@ function ops.set_state()
     -- The crowd meter has no C++ home the dump shows: its widget, a Blueprint, keeps the
     -- health and the rules that move it. Freshness and the VFX manager's CrowdMeterPercent
     -- both looked like it and did not follow the screen
+    -- There are five: four are templates in /Game/ packages that FUSER builds the HUD from,
+    -- frozen at their defaults, 30 with a warning, and FindFirstOf finds one of those. The
+    -- one on screen was made at runtime, so it lives under /Engine/Transient
     try("crowd", function()
-        local widget = first("WBP_ShowsCrowdMeter_C")
+        local widget
+        for _, w in ipairs(FindAllOf("WBP_ShowsCrowdMeter_C") or {}) do
+            local ok, path = pcall(function() return w:GetFullName() end)
+            if valid(w) and ok and type(path) == "string" and path:find(" /Engine/Transient", 1, true) then
+                widget = w
+            end
+        end
+        if not widget then
+            error("no crowd meter has started", 0)
+        end
         local out = {}
         for _, field in ipairs({ "CurHealth", "MaxHealth", "CurHealthState", "WarningCount" }) do
             local ok, v = pcall(function() return widget[field] end)
@@ -459,13 +471,9 @@ function ops.set_state()
     return state
 end
 
--- Fields of the first object of a class, read and never written, and nothing called: for
--- finding where FUSER keeps something without a restart for every guess. A field that is
--- an object or text comes back as its name.
-function ops.read(args)
-    local obj = first(args.class)
+local function readFields(obj, fields)
     local out = {}
-    for _, field in ipairs(args.fields or {}) do
+    for _, field in ipairs(fields or {}) do
         local ok, v = pcall(function() return obj[field] end)
         if not ok then
             out[field] = NULL
@@ -477,6 +485,25 @@ function ops.read(args)
                 named, s = pcall(function() return v:GetFullName() end)
             end
             out[field] = named and plain(s) or NULL
+        end
+    end
+    return out
+end
+
+-- Fields of an object of a class, read and never written, and nothing called: for finding
+-- where FUSER keeps something without a restart for every guess. A field that is an object
+-- or text comes back as its name. With all, every object of the class, each with its full
+-- name, since the first one FindFirstOf finds can be a stale copy.
+function ops.read(args)
+    if not args.all then
+        return readFields(first(args.class), args.fields)
+    end
+    local out = array()
+    for _, obj in ipairs(FindAllOf(args.class) or {}) do
+        if valid(obj) then
+            local entry = readFields(obj, args.fields)
+            entry["(object)"] = obj:GetFullName()
+            out[#out + 1] = entry
         end
     end
     return out

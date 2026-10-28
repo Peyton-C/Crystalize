@@ -520,7 +520,9 @@ class Server:
         show = raw.get("show") or {}
         if show.get("has_meter") is not None:
             result["crowd_meter_on"] = show["has_meter"]
-        crowd = raw.get("crowd") or {}
+        # Before the meter is on, its widget holds its starting values, which read like a
+        # meter already in play
+        crowd = (raw.get("crowd") or {}) if show.get("has_meter") is not False else {}
         health, most = crowd.get("CurHealth"), crowd.get("MaxHealth")
         if isinstance(health, (int, float)) and isinstance(most, (int, float)) and most > 0:
             result["crowd_meter"] = round(health / most * 100)

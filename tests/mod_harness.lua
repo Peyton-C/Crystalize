@@ -129,9 +129,18 @@ local world = {
     }) },
     ShowFlowMgr = { object("ShowFlowMgr", { GetScore = function() return 1500 end }) },
     BP_Crowd_Manager_C = { object("Crowd", { CurrentCrowdMeterState = 1 }) },
-    WBP_ShowsCrowdMeter_C = { object("CrowdMeter", {
-        CurHealth = 30, MaxHealth = 100, CurHealthState = 1, WarningCount = 1,
-    }) },
+    -- As in FUSER: a template comes first, frozen at its defaults; the one on screen was
+    -- made at runtime
+    WBP_ShowsCrowdMeter_C = {
+        object("StaleMeter", { CurHealth = 30, MaxHealth = 100, CurHealthState = 1, WarningCount = 1,
+            GetFullName = function()
+                return "WBP_ShowsCrowdMeter_C /Game/Gameplay/Hud/WBP_Hud.WidgetArchetype:WidgetTree_0.CrowdMeter"
+            end }),
+        object("LiveMeter", { CurHealth = 62, MaxHealth = 100, CurHealthState = 2, WarningCount = 0,
+            GetFullName = function()
+                return "WBP_ShowsCrowdMeter_C /Engine/Transient.GameEngine_1:WBP_Hud.WidgetTree_0.CrowdMeter"
+            end }),
+    },
     DeskState = { object("DeskState") },
     AudioController = { object("AudioController") },
 }

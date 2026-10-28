@@ -413,3 +413,10 @@ def test_request_wants(f, words):
 def test_goal_text_fills_disc_types():
     from crystalize import music
     assert music.goal_text("Drop a {bsType}") == "Drop a bass (green)"
+
+
+def test_get_set_hides_the_meter_before_it_is_on(talk, monkeypatch):
+    monkeypatch.setitem(SET_STATE, "show", {"score": 0, "has_meter": False})
+    result, _ = call(talk, "get_set")
+    assert result["crowd_meter_on"] is False
+    assert not {"crowd_meter", "crowd", "crowd_warnings"} & set(result)
