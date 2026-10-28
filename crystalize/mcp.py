@@ -85,7 +85,8 @@ TOOLS = [
         "description": "Search the songs you can play, custom songs included and DLC you do "
                        "not own left out. Returns the total that match and up to `limit` of "
                        "them: id, title, artist, year, genre, the song's own BPM and key, its "
-                       "tags, and its discs with name, type and instrument. Works from the saved "
+                       "tags, and its discs with name, type and instrument. Instrument, disc type "
+                       "and years find what a crowd request or goal asks for. Works from the saved "
                        "library while FUSER is closed.",
         "inputSchema": {
             "type": "object",
@@ -96,6 +97,15 @@ TOOLS = [
                 "key": {"type": "string", "description": "Exact key, such as Ab or F#m"},
                 "bpm_min": {"type": "number"},
                 "bpm_max": {"type": "number"},
+                "year_min": {"type": "integer", "description": "Released this year or later"},
+                "year_max": {"type": "integer"},
+                "instrument": {"type": "string", "enum": [i for i in music.INSTRUMENTS if i],
+                               "description": "Only songs with a disc played on it, listing "
+                                              "only those discs. FUSER names it exactly: a "
+                                              "Bass Guitar disc is not a Bass one"},
+                "disc_type": {"type": "string", "enum": list(music.DISC_TYPES),
+                              "description": "Only songs with a disc of this type, listing only "
+                                             "those discs; with instrument, a disc must be both"},
                 "near": {"type": "string",
                          "description": "A song id: only songs in the same, relative or a "
                                         "neighbouring key and within 8% of its tempo, or of "
@@ -577,6 +587,8 @@ class Server:
         genre = args.get("genre")
         key = music.key_name(*music.parse_key(args["key"])) if args.get("key") else None
         low, high = args.get("bpm_min"), args.get("bpm_max")
+        y_low, y_high = args.get("year_min"), args.get("year_max")
+        instrument, disc_type = args.get("instrument"), args.get("disc_type")
         e_low, e_high = args.get("energy_min"), args.get("energy_max")
         tags = store.tags()
         songs = self._library()
@@ -603,6 +615,20 @@ class Server:
                 continue
             if (low is not None and bpm < low) or (high is not None and bpm > high):
                 continue
+            year = song["year"]
+            if (y_low is not None or y_high is not None) and not year:
+                continue
+            if (y_low is not None and year < y_low) or (y_high is not None and year > y_high):
+                continue
+            if instrument or disc_type:
+                # The discs that fill a request or a goal for these, and only them, so the
+                # answer is the disc to drop rather than a song to look through
+                discs = [d for d in song["discs"]
+                         if (not instrument or d["instrument"] == instrument)
+                         and (not disc_type or d["type"] == disc_type)]
+                if not discs:
+                    continue
+                song = {**song, "discs": discs}
             tag = tags.get(song["id"], {})
             if args.get("untagged") and tag:
                 continue
@@ -611,7 +637,7 @@ class Server:
                 continue
             if (e_low is not None and energy < e_low) or (e_high is not None and energy > e_high):
                 continue
-            if near and (song is near or not _near(near, song)):
+            if near and (song["id"] == near["id"] or not _near(near, song)):
                 continue
             found.append({**song, **({"tags": tag} if tag else {})})
 

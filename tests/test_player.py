@@ -307,3 +307,31 @@ def test_keep_alive_waits_while_a_mix_plays():
     assert all(args["name"] not in "abcd" for _, op, args in fuser.sent if op == "drop")
     p.stop()
     p.stop_keep_alive()
+
+
+def test_keep_alive_rides_out_a_missed_answer():
+    fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
+    real, misses = fuser.call, [1]
+
+    def call(op, **args):
+        if op == "state" and misses[0]:
+            misses[0] -= 1
+            raise GameError("FUSER took the command but did not answer")
+        return real(op, **args)
+    fuser.call = call
+    p = Player(fuser)
+    p.keep_alive(POOL)
+    fuser.to(7.95)
+    wait_until(lambda: len(fuser.sent) == 1)
+    status = p.keep_alive_status()
+    assert status["on"] and "did not answer" in status["missed"]
+    p.stop_keep_alive()
+
+
+def test_keep_alive_stops_when_fuser_is_gone():
+    fuser = ClockBridge(beat=3.95)
+    fuser.call = lambda op, **args: (_ for _ in ()).throw(GameError("FUSER is not running"))
+    p = Player(fuser)
+    p.keep_alive(POOL)
+    wait_until(lambda: not p.keep_alive_status()["on"])
+    assert p.keep_alive_status()["error"] == "FUSER is not running"

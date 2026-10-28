@@ -36,7 +36,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | --- | --- |
 | `get_state` | The key, the tempo, the tempo range FUSER allows, each deck's playing and queued disc, and the mix playing, with the bar it is on |
 | `get_set` | In a campaign set, the open crowd requests, the goals not yet done, the crowd meter and the score, see Campaign |
-| `search_songs` | Songs whose title or artist has every word of `query`, narrowed by `genre`, `key`, `bpm_min`, `bpm_max`, `energy_min`, `energy_max`, `untagged` and `near`, a page at a time. Each lists its tags and its discs by name |
+| `search_songs` | Songs whose title or artist has every word of `query`, narrowed by `genre`, `key`, `bpm_min`, `bpm_max`, `year_min`, `year_max`, `instrument`, `disc_type`, `energy_min`, `energy_max`, `untagged` and `near`, a page at a time. Each lists its tags and its discs by name |
 | `tag_songs` | Writes down what songs are like, see Tags |
 | `plan_mix` | Checks a plan or a saved mix without playing it, see Plans |
 | `save_mix`, `load_mix`, `list_mixes` | Saves a plan under a name, gives it back to change, and lists them |
@@ -49,6 +49,8 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 A call with an argument its tool does not take is refused, and the error lists the arguments it does take.
 
 `near` takes a song id and keeps the songs in the same, the relative or a neighbouring key, within 8% of its tempo or of half or double it. Those are the songs FUSER shifts and stretches least to play beside it. It narrows the library and does not choose: most of what it returns will not belong.
+
+With `instrument` or `disc_type`, `search_songs` lists only the discs that match, which are the ones a crowd request or goal asking for them takes. Instruments are FUSER's own names, matched exactly.
 
 `search_songs` leaves out DLC you do not own, which FUSER loads and plays as silence, and `drop_disc` and plans refuse it.
 
@@ -109,7 +111,7 @@ When the decks are empty, bar 0 starts at once. When something is playing, bar 0
 ## Campaign
 Crystalize plays campaign sets as it plays freestyle, and any disc in the library can be dropped, not only the set's crate. Drops, ejects and the rest count toward goals and crowd requests as if you had made them, and a drop `play_mix`, `drop_disc` or `drop_queue` makes counts as one on the downbeat. To change one deck, use `drop_disc`: it waits for the next downbeat, up to a bar, and returns once the drop is sent. A plan that repeats the other decks' discs at bar 0 keeps them, so the crowd does not count them as repeats.
 
-The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 beats overactive, and counts a drop of one of the last 3 discs as a repeat. `keep_alive` works inside those rules. 3 bars after the last change, made by anyone, it drops the next disc of its list on that disc's deck, skipping one already on a deck or among the last 3 dropped, and skipping the bar if a drop would make the set overactive. It waits while a mix plays, and `get_state` shows what it last dropped. Give it at least 4 discs that can swap in for each other, such as two beats on one deck and two on another, and stop it with `stop`.
+The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 beats overactive, and counts a drop of one of the last 3 discs as a repeat. `keep_alive` works inside those rules. 3 bars after the last change, made by anyone, it drops the next disc of its list on that disc's deck, skipping one already on a deck or among the last 3 dropped, and skipping the bar if a drop would make the set overactive. It waits while a mix plays, and `get_state` shows what it last dropped. It rides out a command FUSER leaves unanswered and stops after 3 in a row. Give it at least 4 discs that can swap in for each other, such as two beats on one deck and two on another, and stop it with `stop`.
 
 `get_set` reports the set as FUSER keeps it:
 

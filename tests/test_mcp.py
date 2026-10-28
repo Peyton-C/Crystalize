@@ -187,6 +187,12 @@ def test_search_groups_discs_into_songs(talk):
     ({"bpm_min": 130}, ["bad guy", "Mr. Brightside"]),
     ({"bpm_max": 130}, ["Call Me Maybe"]),
     ({"limit": 1, "offset": 1}, ["Call Me Maybe"]),
+    ({"year_min": 2010}, ["bad guy", "Call Me Maybe"]),
+    ({"year_max": 2010}, ["Mr. Brightside"]),
+    ({"year_min": 2010, "year_max": 2019}, ["bad guy", "Call Me Maybe"]),
+    ({"instrument": "Bass"}, ["bad guy"]),  # Mr. Brightside's is a Bass Guitar
+    ({"disc_type": "lead"}, ["Call Me Maybe"]),
+    ({"instrument": "Drums", "disc_type": "lead"}, []),
     # G major's relative is E minor, not G minor, and its tempo is 120 against 135
     ({"near": "callmemaybe"}, []),
     # 135 is within 8% of 148? No: 9.6% away. And D flat against G minor clashes
@@ -195,6 +201,11 @@ def test_search_groups_discs_into_songs(talk):
 def test_search_filters(talk, args, titles):
     found, _ = call(talk, "search_songs", **args)
     assert [s["title"] for s in found["songs"]] == titles
+
+
+def test_instrument_lists_only_its_discs(talk):
+    found, _ = call(talk, "search_songs", instrument="Drums")
+    assert [d["name"] for d in found["songs"][0]["discs"]] == ["callmemaybebt"]
 
 
 def test_unowned_dlc_is_hidden(talk):

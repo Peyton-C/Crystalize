@@ -38,6 +38,9 @@ BUSY_BEATS, BUSY_ACTIONS, REMEMBERED_DISCS = 24, 3, 3
 # or two, and a good action earns more than that costs
 KEEP_ALIVE_BARS = 3
 
+# Unanswered commands in a row before the keep-alive takes FUSER for gone
+KEEP_ALIVE_MISSES = 3
+
 
 class Player:
     def __init__(self, bridge):
@@ -204,50 +207,22 @@ class Player:
                     self._dropped = (self._dropped + [args["name"]])[-REMEMBERED_DISCS:]
 
     def _keep(self, pool, stop) -> None:
-        turn = 0
+        turn, missed = 0, 0
         try:
             while not stop.is_set():
-                if self._thread and self._thread.is_alive():
-                    stop.wait(POLL_SECONDS)  # a mix keeps the crowd busy enough
-                    continue
-                beat, per_second, trip = self._clock()
-                downbeat = _next_downbeat(beat, per_second, trip)
-                wait = _wait(downbeat, beat, per_second, trip)
-                if wait >= SETTLE_SECONDS:
-                    stop.wait(POLL_SECONDS)
-                    continue
-                lands = time.monotonic() + max(wait, 0)
-                with self._lock:
-                    last = self._actions[-1] if self._actions else None
-                    busy = sum(1 for t in self._actions if lands - t < BUSY_BEATS / per_second)
-                    remembered = list(self._dropped)
-                # Half a beat short of the bars, so jitter in the clock never puts it off
-                # by a whole bar
-                idle = (KEEP_ALIVE_BARS * BEATS_PER_BAR - 0.5) / per_second
-                pick = None
-                if (last is None or lands - last >= idle) and busy < BUSY_ACTIONS:
-                    state = self.bridge.call("state")
-                    held = {d.get("playing") for d in state["decks"] if d}
-                    for i in range(len(pool)):
-                        disc, deck = pool[(turn + i) % len(pool)]
-                        if disc not in held and disc not in remembered:
-                            pick, turn = (disc, deck), (turn + i + 1) % len(pool)
-                            break
+                try:
+                    turn = self._keep_turn(pool, turn, stop)
+                    missed = 0
+                except GameError as e:
+                    # FUSER now and then leaves one command unanswered and takes the next,
+                    # and a keep-alive that stopped at the first would leave the meter to
+                    # drain until the agent looked
+                    missed += 1
+                    if missed >= KEEP_ALIVE_MISSES:
+                        raise
                     with self._lock:
-                        self._keep_status["waiting"] = None if pick else \
-                            "every disc is on a deck or one the crowd remembers"
-                if pick is None:
-                    stop.wait(max(wait, 0) + POLL_SECONDS)  # past this downbeat
-                    continue
-                # The state took a round trip, so the wait is measured again
-                beat, per_second, trip = self._clock()
-                wait = _wait(downbeat, beat, per_second, trip)
-                if wait > 0 and stop.wait(wait):
-                    break
-                self._send([("drop", {"name": pick[0], "deck": pick[1], "queue": False})])
-                with self._lock:
-                    self._keep_status["dropped"] += 1
-                    self._keep_status["last"] = {"disc": pick[0], "deck": pick[1]}
+                        self._keep_status["missed"] = str(e)
+                    stop.wait(POLL_SECONDS)
         except GameError as e:
             with self._lock:
                 self._keep_status["error"] = str(e)
@@ -255,6 +230,51 @@ class Player:
             with self._lock:
                 self._keep_status["on"] = False
 
+    def _keep_turn(self, pool, turn, stop) -> int:
+        """One look at the clock, and a drop if one is due. Returns the turn to start the
+        next pick from."""
+        if self._thread and self._thread.is_alive():
+            stop.wait(POLL_SECONDS)  # a mix keeps the crowd busy enough
+            return turn
+        beat, per_second, trip = self._clock()
+        downbeat = _next_downbeat(beat, per_second, trip)
+        wait = _wait(downbeat, beat, per_second, trip)
+        if wait >= SETTLE_SECONDS:
+            stop.wait(POLL_SECONDS)
+            return turn
+        lands = time.monotonic() + max(wait, 0)
+        with self._lock:
+            last = self._actions[-1] if self._actions else None
+            busy = sum(1 for t in self._actions if lands - t < BUSY_BEATS / per_second)
+            remembered = list(self._dropped)
+        # Half a beat short of the bars, so jitter in the clock never puts it off
+        # by a whole bar
+        idle = (KEEP_ALIVE_BARS * BEATS_PER_BAR - 0.5) / per_second
+        pick = None
+        if (last is None or lands - last >= idle) and busy < BUSY_ACTIONS:
+            state = self.bridge.call("state")
+            held = {d.get("playing") for d in state["decks"] if d}
+            for i in range(len(pool)):
+                disc, deck = pool[(turn + i) % len(pool)]
+                if disc not in held and disc not in remembered:
+                    pick, turn = (disc, deck), (turn + i + 1) % len(pool)
+                    break
+            with self._lock:
+                self._keep_status["waiting"] = None if pick else \
+                    "every disc is on a deck or one the crowd remembers"
+        if pick is None:
+            stop.wait(max(wait, 0) + POLL_SECONDS)  # past this downbeat
+            return turn
+        # The state took a round trip, so the wait is measured again
+        beat, per_second, trip = self._clock()
+        wait = _wait(downbeat, beat, per_second, trip)
+        if wait > 0 and stop.wait(wait):
+            return turn
+        self._send([("drop", {"name": pick[0], "deck": pick[1], "queue": False})])
+        with self._lock:
+            self._keep_status["dropped"] += 1
+            self._keep_status["last"] = {"disc": pick[0], "deck": pick[1]}
+        return turn
 
 def _next_downbeat(beat: float, per_second: float, trip: float) -> int:
     """The first downbeat a command sent now can still reach."""
