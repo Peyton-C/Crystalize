@@ -29,6 +29,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | --- | --- |
 | `tag_library` | Tags the songs the agent knows, 50 at a time, in a session that does nothing else |
 | `build_mix` | Chooses songs, plans a mix, fixes what its checks find, then saves and plays it. Takes an optional `brief`, `minutes` and `name` |
+| `play_set` | Plays the campaign set FUSER has open, answering goals and requests through `await_event`, and says the stars at the end |
 | `review_mix` | Loads a saved mix, fixes its weak parts, and saves it again. Takes the mix's `name` |
 
 ## Tools
@@ -44,7 +45,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `play_mix` | Plays a plan or a saved mix, each step on its bar |
 | `stop_mix` | Stops the mix. The decks keep playing what they have |
 | `keep_alive` | Swaps discs from a list now and then, so a campaign set's crowd meter does not drain while the agent thinks |
-| `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar |
+| `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck`, `take_snapshot` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar. A snapshot is kept in the player's profile, as one taken with the key is |
 
 A call with an argument its tool does not take is refused, and the error lists the arguments it does take.
 
@@ -120,7 +121,7 @@ The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 bea
 | Field | What |
 | --- | --- |
 | `measure` | The measure FUSER is on. Requests are timed in these, not in a mix's bars |
-| `requests` | Each scheduled or active crowd request: what it `wants`, such as "a disc played on Synth", and the measure it `starts` and `ends` on. An active one has `measures_left`. FUSER chooses what a request wants only when it starts |
+| `requests` | Each scheduled or active crowd request: what it `wants`, such as "a disc played on Synth" or "a disc from Bad Girls by M.I.A.", the artist given since two songs can share a title, and the measure it `starts` and `ends` on. An active one has `measures_left`. FUSER chooses what a request wants only when it starts |
 | `requests_settled` | How many have passed and failed |
 | `goals` | Each goal not yet done, with how many times it has been `done` `of` the times it needs |
 | `goals_done` | How many are done |
@@ -137,7 +138,7 @@ The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 bea
 
 The meter drains about 1 a second once 6 seconds pass without an action, and a good action adds 3. A bad one takes 4, and so do a missed request and a missed goal. FUSER remembers the last 3 discs and counts more than 3 actions in 6 bars as too much, so keep it fed with one fresh disc every few bars rather than many at once.
 
-A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "{Transition} Smart Riser". Disc types, instruments, genres and the song a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)", "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah" and "Include 2+ {Genre} discs" reads "Include 2+ Rock discs".
+A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "{Transition} Smart Riser". Disc types, instruments, genres and the song a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)", "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah by The Clash" and "Include 2+ {Genre} discs" reads "Include 2+ Rock discs".
 
 `await_event` waits for the set to change, so the agent does not spend its turns polling `get_set`. It returns the events and `get_set`'s view together. Crystalize compares each read with the last one the agent saw through either tool, so anything that happened while the agent was busy comes back at once. Otherwise it waits up to `seconds`, 20 by default and at most 60.
 

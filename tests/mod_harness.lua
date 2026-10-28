@@ -191,6 +191,7 @@ local world = {
     },
     DeskState = { object("DeskState") },
     AudioController = { object("AudioController") },
+    SavedMomentsMgr = { object("SavedMomentsMgr") },
 }
 if missing then
     world[missing] = nil

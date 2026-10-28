@@ -334,6 +334,13 @@ function ops.solo(args)
     return { deck = args.deck, on = args.on == true }
 end
 
+-- What the Take Snapshot key does: saves the mix playing as a moment in the player's
+-- profile, which the campaign's snapshot goals count
+function ops.snapshot()
+    first("SavedMomentsMgr"):SaveCurrentMoment()
+    return {}
+end
+
 local function shortNames(arr, field)
     local out = array()
     for _, obj in ipairs(items(arr)) do

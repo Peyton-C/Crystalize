@@ -119,7 +119,7 @@ def test_initialize_and_list(talk):
     assert names[:5] == ["get_state", "get_set", "await_event", "search_songs", "tag_songs"]
     assert {"plan_mix", "play_mix", "stop_mix", "save_mix", "drop_disc"} <= set(names)
     assert [p["name"] for p in prompts["result"]["prompts"]] == \
-        ["tag_library", "build_mix", "review_mix"]
+        ["tag_library", "build_mix", "play_set", "review_mix"]
 
 
 def test_every_tool_has_a_handler():
@@ -400,6 +400,7 @@ def test_set_key_rejects(talk, fake, text):
     ("mute_deck", {"deck": 2, "mute": True}, "mute", {"deck": 1, "on": True}),
     ("solo_deck", {"deck": 1, "solo": False}, "solo", {"deck": 0, "on": False}),
     ("eject", {"deck": 3}, "eject", {"deck": 2}),
+    ("take_snapshot", {}, "snapshot", {}),
 ])
 def test_simple_tools(talk, fake, name, args, op, sent):
     _, failed = call(talk, name, **args)
@@ -467,7 +468,7 @@ def test_get_set_names_the_featured_song(talk, monkeypatch):
             "performed": 0, "required": 1, "completed": False, "active": True}
     monkeypatch.setitem(SET_STATE, "goals", [goal])
     result, _ = call(talk, "get_set")
-    assert result["goals"][0]["goal"] == 'Drop guitar bass (green) from "Mr. Brightside"'
+    assert result["goals"][0]["goal"] == 'Drop guitar bass (green) from "Mr. Brightside by The Killers"'
 
 
 def test_get_set_hides_the_meter_before_it_is_on(talk, monkeypatch):
@@ -612,7 +613,7 @@ def test_request_names_its_song_by_title(talk, monkeypatch):
     monkeypatch.setitem(SET_STATE, "requests", [{"state": 1, "start_measure": 90, "bars": 14,
         "filter": {"type": 5, "songs": ["mrbrightside"]}}])
     result, _ = call(talk, "get_set")
-    assert result["requests"][0]["wants"] == "a disc from Mr. Brightside"
+    assert result["requests"][0]["wants"] == "a disc from Mr. Brightside by The Killers"
 
 
 def test_pickup_drop_needs_pickups(talk, fake):
@@ -626,3 +627,9 @@ def test_goal_text_says_only_means_the_whole_mix():
     assert music.goal_text("Include only 1 {btType}") == "Include only 1 disc, a beat (blue)"
     assert music.goal_text("Include only 2 {lpType}") == "Include only 2 discs, all loop (yellow)"
     assert music.goal_text("Include only 3 discs") == "Include only 3 discs"
+
+
+def test_play_set_prompt_needs_no_arguments(talk):
+    [reply] = talk({"id": 1, "method": "prompts/get", "params": {"name": "play_set"}})
+    text = reply["result"]["messages"][0]["content"]["text"]
+    assert "await_event" in text and "on_pickup" in text and "keep_alive" in text

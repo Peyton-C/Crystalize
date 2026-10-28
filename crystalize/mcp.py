@@ -275,6 +275,13 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"deck": DECK}, "required": ["deck"]},
     },
     {
+        "name": "take_snapshot",
+        "description": "Save the mix playing as a snapshot, as FUSER's Take Snapshot key "
+                       "does, on the next downbeat, for goals that ask for one. Each is kept "
+                       "in the player's profile.",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "set_key",
         "description": "Change the session's key from the next bar. Every deck follows.",
         "inputSchema": {"type": "object", "properties": {"key": KEY}, "required": ["key"]},
@@ -346,6 +353,42 @@ PROMPTS = [
             "a long mix a stretch at a time with from_bar and to_bar.\n"
             f"3. save_mix {a.get('name') or 'it'} as you go, so the work survives a restart.\n"
             "4. play_mix it, follow it with get_state, and say what you built and why."),
+    },
+    {
+        "name": "play_set",
+        "description": "Play the campaign set FUSER has open, goal by goal and request by "
+                       "request, for as many stars as it gives",
+        "arguments": [],
+        "text": lambda a: (
+            "Play the campaign set open in FUSER with Crystalize. Goals and crowd requests "
+            "come one after another, so react to them rather than plan the set.\n\n"
+            "1. await_event, then answer what it reports, then await_event again, until "
+            "set_ended. Never leave the set waiting on a long think: a request lasts about 14 "
+            "measures.\n"
+            "2. Give a goal that has just started a bar, await_event with seconds 3, before "
+            "acting on it. A drop made the moment it appears can miss, and a pickup drop can "
+            "land sooner than a downbeat one. A goal that counts more than one action, such "
+            "as two ejects, needs each on its own bar: send them one call after another, "
+            "never together, since two in one bar count once.\n"
+            "3. A Drop goal counts the drop; drop_disc lands it on the next downbeat, which "
+            "grades perfect. A goal on Pickup takes drop_disc with on_pickup. An Include goal "
+            "counts bars with the mix as it says, so put its discs on decks and leave them. "
+            "Include only N discs counts every deck: Include only 1 disc, a beat, is one beat "
+            "playing alone. Eject a disc means eject; Take a Snapshot means take_snapshot.\n"
+            "4. A request names a genre, an instrument, a decade or a song. search_songs finds "
+            "the disc with genre, instrument, disc_type, year_min and year_max, or query. A "
+            "song is named with its artist, and two songs can share a title, so query both. When "
+            "two requests are open, one disc that fills an instrument and a song earns a combo "
+            "bonus. Never drop one of the last 3 discs: the crowd counts it a repeat.\n"
+            "5. Once the crowd meter is on, keep_alive holds it up while you work. Give it 6 to 8 "
+            "discs on the decks your goals are not using, such as beats on one and loops on "
+            "another, and give it a new list when a goal needs those decks or a kind of disc "
+            "they would replace. Later sets want the mix changing all the time, and an eject "
+            "counts as a change.\n"
+            "6. At set_ended, keep_alive with stop, and say the stars and what cost points: "
+            "get_set's points show requests, combos, goals, timing and the crowd meter.\n\n"
+            "If a goal keeps a placeholder Crystalize cannot fill, such as {Transition}, or "
+            "needs a tool it lacks, say so and carry on with the rest."),
     },
     {
         "name": "review_mix",
@@ -650,15 +693,21 @@ class Server:
     def _titles(self, goals: list) -> dict:
         if not any(g.get("song") for g in goals):
             return {}
-        return {song["id"]: song["title"] for song in self._library()}
+        return self._song_names()
+
+    def _song_names(self) -> dict:
+        """Each song's id to its title and artist. A title alone is not enough: the library
+        has two songs called Bad Girls, and a request for M.I.A.'s was filled with the other,
+        which a campaign crate of one never shows."""
+        return {song["id"]: f"{song['title']} by {song['artist']}" if song.get("artist")
+                else song["title"] for song in self._library()}
 
     def _request_entry(self, r: dict, measure) -> dict:
         state = music._named(music.REQUEST_STATES, r.get("state"))
         start, bars = r.get("start_measure"), r.get("bars")
         ends = start + bars if isinstance(start, int) and isinstance(bars, int) else None
         f = r.get("filter")
-        titles = {song["id"]: song["title"] for song in self._library()} \
-            if f and f.get("songs") else {}
+        titles = self._song_names() if f and f.get("songs") else {}
         entry = {"state": state, "wants": music.request_wants(f, titles),
                  "starts": start, "ends": ends}
         if state == "active" and ends is not None and isinstance(measure, int):
@@ -923,6 +972,10 @@ class Server:
         # On the downbeat, so the disc stops at the end of a bar rather than partway in
         self.player.on_downbeat([("eject", {"deck": _deck(args)})])
         return {"deck": args["deck"], "ejected": True}
+
+    def _tool_take_snapshot(self, args: dict) -> dict:
+        self.player.on_downbeat([("snapshot", {})])
+        return {"snapshot": True}
 
     def _tool_set_key(self, args: dict) -> dict:
         key, mode = music.parse_key(str(args["key"]))

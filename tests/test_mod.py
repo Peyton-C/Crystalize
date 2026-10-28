@@ -106,6 +106,7 @@ def test_key_sets_mode_then_key(ask):
     ("set_tempo", {"bpm": 128}, "NetSetTempo", [128]),
     ("mute", {"deck": 1, "on": True}, "NetMuteTrack", [1, True]),
     ("solo", {"deck": 0, "on": False}, "NetSoloTrack", [0, False]),
+    ("snapshot", {}, "SaveCurrentMoment", []),
 ])
 def test_simple_ops(ask, op, args, method, expected):
     body, calls = ask(op, **args)
