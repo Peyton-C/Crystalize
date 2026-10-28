@@ -378,7 +378,14 @@ def test_bad_deck_never_reaches_fuser(talk, fake, deck):
 def test_set_key(talk, fake, text, key, mode, name):
     result, failed = call(talk, "set_key", key=text)
     assert not failed and result == {"key": name}
-    assert fake.calls == [("set_key", {"key": key, "mode": mode})]
+    assert fake.calls[-1] == ("set_key", {"key": key, "mode": mode})
+    assert fake.ops() == ["state", "clock", "set_key"]  # timed to the downbeat
+
+
+def test_set_tempo_waits_for_the_downbeat(talk, fake):
+    _, failed = call(talk, "set_tempo", bpm=128)
+    assert not failed and fake.calls[-1] == ("set_tempo", {"bpm": 128})
+    assert fake.ops() == ["state", "clock", "set_tempo"]
 
 
 @pytest.mark.parametrize("text", ["H", "E#", "", "Abmm"])
@@ -388,7 +395,6 @@ def test_set_key_rejects(talk, fake, text):
 
 
 @pytest.mark.parametrize("name, args, op, sent", [
-    ("set_tempo", {"bpm": 128}, "set_tempo", {"bpm": 128}),
     ("mute_deck", {"deck": 2, "mute": True}, "mute", {"deck": 1, "on": True}),
     ("solo_deck", {"deck": 1, "solo": False}, "solo", {"deck": 0, "on": False}),
 ])

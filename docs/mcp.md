@@ -43,8 +43,8 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `play_mix` | Plays a plan or a saved mix, each step on its bar |
 | `stop_mix` | Stops the mix. The decks keep playing what they have |
 | `keep_alive` | Swaps discs from a list now and then, so a campaign set's crowd meter does not drain while the agent thinks |
-| `drop_disc`, `drop_queue` | Drop outside a plan, timed to the next downbeat as `play_mix` times a bar |
-| `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck` | Act on the game at once, outside a plan |
+| `drop_disc`, `drop_queue`, `set_key`, `set_tempo` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar |
+| `eject`, `mute_deck`, `solo_deck` | Act on the game at once, outside a plan |
 
 A call with an argument its tool does not take is refused, and the error lists the arguments it does take.
 

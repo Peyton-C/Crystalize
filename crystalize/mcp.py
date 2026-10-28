@@ -239,12 +239,13 @@ TOOLS = [
     },
     {
         "name": "set_key",
-        "description": "Change the session's key now. Every deck follows.",
+        "description": "Change the session's key from the next bar. Every deck follows.",
         "inputSchema": {"type": "object", "properties": {"key": KEY}, "required": ["key"]},
     },
     {
         "name": "set_tempo",
-        "description": "Change the session's tempo now, within the range get_state gives.",
+        "description": "Change the session's tempo from the next bar, within the range "
+                       "get_state gives.",
         "inputSchema": {"type": "object", "properties": {"bpm": {"type": "integer"}},
                         "required": ["bpm"]},
     },
@@ -755,12 +756,14 @@ class Server:
 
     def _tool_set_key(self, args: dict) -> dict:
         key, mode = music.parse_key(str(args["key"]))
-        self.bridge.call("set_key", key=key, mode=mode)
+        # On the downbeat, as drops are: the campaign's crowd favors a change made on the
+        # beat, though whether a key or tempo goal checks the timing is not known
+        self.player.on_downbeat([("set_key", {"key": key, "mode": mode})])
         return {"key": music.key_name(key, mode)}
 
     def _tool_set_tempo(self, args: dict) -> dict:
         bpm = int(args["bpm"])
-        self.bridge.call("set_tempo", bpm=bpm)
+        self.player.on_downbeat([("set_tempo", {"bpm": bpm})])
         return {"bpm": bpm}
 
     def _tool_mute_deck(self, args: dict) -> dict:
