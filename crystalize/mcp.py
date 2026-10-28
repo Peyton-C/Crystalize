@@ -76,8 +76,8 @@ TOOLS = [
                        "medium, high, peak) and warnings, the "
                        "mix's freshness from 0 to 100, which a new drop raises and a still "
                        "stretch lets fade, and the score. Measures are FUSER's own, not a "
-                       "mix's bars. A goal's text may keep a placeholder such as {Genre} the "
-                       "mod cannot read yet.",
+                       "mix's bars. A goal's text may keep a placeholder such as {Transition} "
+                       "the mod cannot read yet.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -537,7 +537,8 @@ class Server:
                 if g.get("completed") is True or g.get("active") is False:
                     done += g.get("completed") is True
                     continue
-                entry = {"goal": music.goal_text(g.get("name"), titles.get(g.get("song"), g.get("song")))
+                entry = {"goal": music.goal_text(g.get("name"), titles.get(g.get("song"), g.get("song")),
+                                                 g.get("filters"))
                          or g.get("description"),
                          "done": g.get("performed"), "of": g.get("required")}
                 if g.get("bars"):

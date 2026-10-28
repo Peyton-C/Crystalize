@@ -130,7 +130,7 @@ The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 bea
 
 The meter drains about 1 a second once 6 seconds pass without an action, and a good action adds 3. A bad one takes 4, and so do a missed request and a missed goal. FUSER remembers the last 3 discs and counts more than 3 actions in 6 bars as too much, so keep it fed with one fresh disc every few bars rather than many at once.
 
-A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "Include 2+ {Genre} discs". Disc types, instruments and the song a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)" and "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah".
+A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "{Transition} Smart Riser". Disc types, instruments, genres and the song a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)", "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah" and "Include 2+ {Genre} discs" reads "Include 2+ Rock discs".
 
 ## Tempo range
 FUSER allows 90 to 157 BPM. FuserSongLoader builds from May 2026 on widen it to 60 to 200. Crystalize reads the range from the game, so plans are checked against whichever you have.

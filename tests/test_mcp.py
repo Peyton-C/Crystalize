@@ -469,3 +469,12 @@ def test_keep_alive_status_counts_decks_from_1(talk, fake, monkeypatch):
                         lambda self: {"on": True, "last": {"disc": "badguybs", "deck": 1}})
     result, _ = call(talk, "get_state")
     assert result["keep_alive"]["last"] == {"disc": "badguybs", "deck": 2}
+
+
+def test_goal_text_fills_the_genre_from_its_filter():
+    from crystalize import music
+    filters = [{"type": 0, "disc_type": 0, "genre": 0}, {"type": 2, "genre": 8}]
+    assert music.goal_text("Include 2+ {Genre} discs", None, filters) == \
+        "Include 2+ Rock discs"
+    assert music.goal_text("Include 2+ {Genre} discs", None, [{"type": 2, "genre": 0}]) == \
+        "Include 2+ {Genre} discs"  # FUSER has not picked one

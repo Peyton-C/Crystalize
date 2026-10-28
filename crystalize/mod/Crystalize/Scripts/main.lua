@@ -331,6 +331,23 @@ local function shortNames(arr, field)
     return out
 end
 
+-- An FCelFilter, which says what discs a crowd request or a goal wants. Its FilterTo says
+-- which of the other fields counts
+local function celFilter(filter)
+    local out = {
+        type = plain(filter.FilterTo),
+        disc_type = plain(filter.LoopType),
+        instrument = plain(filter.instrument),
+        genre = plain(filter.Genre),
+        years = plain(filter.YearRange),
+    }
+    local ok, songs = pcall(shortNames, filter.songs, "songShortName")
+    out.songs = ok and songs or NULL
+    local ok_c, discs = pcall(shortNames, filter.Cels, "shortName")
+    out.discs = ok_c and discs or NULL
+    return out
+end
+
 -- Every crowd request this show has scheduled, active or settled; the server picks
 local function requests()
     local out = array()
@@ -344,19 +361,8 @@ local function requests()
         }
         local request = timing.MyRequest
         if valid(request) then
-            local filter = request.RequestCelFilter
             entry.prompt = text(request.PromptMessage)
-            entry.filter = {
-                type = plain(filter.FilterTo),
-                disc_type = plain(filter.LoopType),
-                instrument = plain(filter.instrument),
-                genre = plain(filter.Genre),
-                years = plain(filter.YearRange),
-            }
-            local ok, songs = pcall(shortNames, filter.songs, "songShortName")
-            entry.filter.songs = ok and songs or NULL
-            local ok_c, discs = pcall(shortNames, filter.Cels, "shortName")
-            entry.filter.discs = ok_c and discs or NULL
+            entry.filter = celFilter(request.RequestCelFilter)
         end
         out[#out + 1] = entry
     end
@@ -425,6 +431,26 @@ local function goals(featured)
                 entry.instrument = ask(data, "GetInstrument")
                 entry.disc_type = ask(data, "GetLoopType")
                 entry.years = ask(data, "GetYearRange")
+                -- What the goal counts, as a request's filter says it. Read from the goal's
+                -- own copy of its data, where FUSER can fill in what it picked. A quota goal
+                -- ("Drop a ...") keeps its filters in CelFilters; a stat goal ("Include 2+
+                -- {Genre} discs") one level down, in each of its MixFilterSet's mix filters
+                local ok, filters = pcall(function()
+                    local found = array()
+                    local function add(set)
+                        for _, filter in ipairs(items(set.Filters)) do
+                            found[#found + 1] = celFilter(filter)
+                        end
+                    end
+                    pcall(add, data.CelFilters)
+                    pcall(function()
+                        for _, mix in ipairs(items(data.MixFilterSet.MixFilters)) do
+                            add(mix.FilterSet)
+                        end
+                    end)
+                    return found
+                end)
+                entry.filters = ok and filters or NULL
                 if data.UseFeaturedSong then
                     entry.song = featured[goalPackage(data)] or NULL
                 end

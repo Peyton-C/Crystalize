@@ -158,6 +158,9 @@ def test_set_state(ask):
     assert (open_["completed"], open_["active"], open_["kind"]) == (False, True, "ShowGoalQuota")
     # The song the set features for it, and none for a goal that features none
     assert open_["song"] == "rockthecasbah" and "song" not in done
+    assert [f["genre"] for f in done["filters"]] == [6]  # a stat goal's, from its mix filters
+    assert open_["filters"] == [{"type": 2, "disc_type": 0, "instrument": 0, "genre": 8,
+                                 "years": 0, "songs": [], "discs": []}]
     assert state["freshness"] == {"value": 0.5, "min": 0, "max": 1}
     # The live meter, not the first one found, which sits frozen at its defaults
     assert state["crowd"] == {"CurHealth": 62, "MaxHealth": 100, "CurHealthState": 2,

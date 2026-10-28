@@ -79,7 +79,10 @@ end
 local function goal(label, goalName, done, featured)
     return object(label, {
         _myGoalData = object(label .. " data", { GoalName = name(goalName), GoalDescription = name(""),
-            UseFeaturedSong = featured == true, GetFullName = function()
+            UseFeaturedSong = featured == true,
+            CelFilters = { Filters = tarrayOf({ { FilterTo = 2, LoopType = 0, instrument = 0, Genre = 8,
+                YearRange = 0, songs = tarrayOf({}), Cels = tarrayOf({}) } }) },
+            GetFullName = function()
                 return "ShowGoalQuotaData /Game/ShowGoals/" .. label .. ".ShowGoalQuotaData_2147467126"
             end }),
         GetFullName = function() return label end,
@@ -90,6 +93,11 @@ local function goal(label, goalName, done, featured)
     })
 end
 local doneGoal = goal("GoalBeat", "Drop a {btType}", true)
+-- A stat goal's data keeps its filters a level down, in its mix filters
+doneGoal._myGoalData.CelFilters = nil
+doneGoal._myGoalData.MixFilterSet = { MixFilters = tarrayOf({ { NumCelsMatching = 2, FilterSet = {
+    Filters = tarrayOf({ { FilterTo = 2, LoopType = 0, instrument = 0, Genre = 6, YearRange = 0,
+        songs = tarrayOf({}), Cels = tarrayOf({}) } }) } } }) }
 local openGoal = goal("GoalBass", "Drop {bsGuitar} from \"{RequiredSong}\"", false, true)
 -- A goal's data as the set's config holds it: the asset, of which the goal holds a copy
 local function asset(label)

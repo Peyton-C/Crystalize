@@ -203,11 +203,17 @@ def request_wants(f: dict | None) -> str | None:
     return None
 
 
-def goal_text(name: str | None, song: str | None = None) -> str | None:
+def goal_text(name: str | None, song: str | None = None,
+              filters: list[dict] | None = None) -> str | None:
     """A goal's name with the placeholders filled that can be, `song` being the title of
-    the song it features."""
+    the song it features and `filters` the FCelFilters it counts discs by."""
     if not name:
         return name
+    for f in filters or []:
+        if f.get("type") == 1 and _named(INSTRUMENTS, f.get("instrument")):
+            name = name.replace("{Instrument}", _named(INSTRUMENTS, f["instrument"]))
+        if f.get("type") == 2 and _named(GENRES, f.get("genre")):
+            name = name.replace("{Genre}", _named(GENRES, f["genre"]))
     for placeholder, words in GOAL_PLACEHOLDERS.items():
         name = name.replace(placeholder, words)
     name = _TYPED_INSTRUMENT.sub(
