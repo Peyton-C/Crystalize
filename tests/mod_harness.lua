@@ -79,7 +79,9 @@ end
 local function goal(label, goalName, done, featured)
     return object(label, {
         _myGoalData = object(label .. " data", { GoalName = name(goalName), GoalDescription = name(""),
-            UseFeaturedSong = featured == true, GetFullName = function() return label .. " data" end }),
+            UseFeaturedSong = featured == true, GetFullName = function()
+                return "ShowGoalQuotaData /Game/ShowGoals/" .. label .. ".ShowGoalQuotaData_2147467126"
+            end }),
         GetFullName = function() return label end,
         GetClass = function() return { GetFName = function() return name("ShowGoalQuota") end } end,
         HasBeenCompleted = function() return done end,
@@ -89,6 +91,12 @@ local function goal(label, goalName, done, featured)
 end
 local doneGoal = goal("GoalBeat", "Drop a {btType}", true)
 local openGoal = goal("GoalBass", "Drop {bsGuitar} from \"{RequiredSong}\"", false, true)
+-- A goal's data as the set's config holds it: the asset, of which the goal holds a copy
+local function asset(label)
+    return object(label .. " asset", { GetFullName = function()
+        return "ShowGoalQuotaData /Game/ShowGoals/" .. label .. "." .. label
+    end })
+end
 local casbah = object("Casbah", { songShortName = name("rockthecasbah"),
     GetFullName = function() return "CelSongSet /Game/Audio/Songs/rockthecasbah" end })
 
@@ -135,8 +143,8 @@ local world = {
         _curPrompt = object("M_0030", {
             FeaturedSongs = tarrayOf({ song, casbah }),
             ShowSections = tarrayOf({ { GoalsThisSection = tarrayOf({
-                { ShowGoalData = doneGoal._myGoalData, FeaturedSongIndex = 0 },
-                { ShowGoalData = openGoal._myGoalData, FeaturedSongIndex = 1 },
+                { ShowGoalData = asset("GoalBeat"), FeaturedSongIndex = 0 },
+                { ShowGoalData = asset("GoalBass"), FeaturedSongIndex = 1 },
             }) } }),
         }) }) },
     BP_Crowd_Manager_C = { object("Crowd", { CurrentCrowdMeterState = 1 }) },

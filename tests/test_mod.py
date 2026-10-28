@@ -218,3 +218,10 @@ def test_request_cannot_run_code(ask):
     body, calls = ask(None, raw='return {id=7, op=os.exit(1)}')
     assert body is None and calls == []
 
+
+
+def test_goals_without_featured_songs(ask):
+    body, _ = ask("set_state", missing="ShowFlowMgr")
+    state = body["result"]
+    assert any(p.startswith("featured songs: ") for p in state["problems"])
+    assert len(state["goals"]) == 2 and state["goals"][1]["song"] is None

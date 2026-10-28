@@ -363,9 +363,16 @@ local function requests()
     return out
 end
 
--- The song each goal of the set features, by the goal data's full name. A goal names it
--- only as {RequiredSong}: the set lists its featured songs, and each section's config of a
--- goal holds an index into that list
+-- The package a goal's data comes from. The goal on stage holds a runtime copy of its data,
+-- ShowGoalQuotaData_2147467126 in the asset's package, while the set's config holds the
+-- asset itself, so only the package matches the two
+local function goalPackage(data)
+    return data:GetFullName():match("^%S+ ([^.]+)")
+end
+
+-- The song each goal of the set features, by goalPackage. A goal names it only as
+-- {RequiredSong}: the set lists its featured songs, and each section's config of a goal
+-- holds an index into that list
 local function featuredSongs()
     local prompt = first("ShowFlowMgr")._curPrompt
     local songs = items(prompt.FeaturedSongs)
@@ -373,8 +380,8 @@ local function featuredSongs()
     for _, section in ipairs(items(prompt.ShowSections)) do
         for _, config in ipairs(items(section.GoalsThisSection)) do
             local data, song = config.ShowGoalData, songs[config.FeaturedSongIndex + 1]
-            if valid(data) and valid(song) and not byGoal[data:GetFullName()] then
-                byGoal[data:GetFullName()] = song.songShortName:ToString()
+            if valid(data) and valid(song) and not byGoal[goalPackage(data)] then
+                byGoal[goalPackage(data)] = song.songShortName:ToString()
             end
         end
     end
@@ -384,7 +391,7 @@ end
 -- Every goal this show has used, each marked whether it is up now. The active ones are a
 -- TMap, which UE4SS's Lua reads less surely than an array, so a failure there costs only
 -- the mark
-local function goals()
+local function goals(featured)
     local manager = first("ShowGoalsMgr")
     local active
     pcall(function()
@@ -394,10 +401,6 @@ local function goals()
         end)
         active = found
     end)
-    local ok, featured = pcall(featuredSongs)
-    if not ok then
-        featured = {}
-    end
     local out = array()
     for _, goal in ipairs(items(manager._allGoalsUsedThisShow)) do
         if valid(goal) then
@@ -423,7 +426,7 @@ local function goals()
                 entry.disc_type = ask(data, "GetLoopType")
                 entry.years = ask(data, "GetYearRange")
                 if data.UseFeaturedSong then
-                    entry.song = featured[data:GetFullName()] or NULL
+                    entry.song = featured[goalPackage(data)] or NULL
                 end
             end
             out[#out + 1] = entry
@@ -448,7 +451,13 @@ function ops.set_state()
     end
     try("measure", function() return first("HypeAudio"):GetCurrentMeasure(RAW) end)
     try("requests", requests)
-    try("goals", goals)
+    -- Apart from the goals, so a set whose songs cannot be read still lists its goals
+    local ok, featured = pcall(featuredSongs)
+    if not ok then
+        state.problems[#state.problems + 1] = "featured songs: " .. tostring(featured)
+        featured = {}
+    end
+    try("goals", function() return goals(featured) end)
     -- How fresh the mix is, which rises on a new drop and fades while nothing changes. It
     -- is not the crowd meter, though it looked like one: it read 0 with the meter halfway
     try("freshness", function()
