@@ -16,7 +16,7 @@ import time
 from . import __version__, music, store
 from .bridge import GameError
 from .mixes import Plan
-from .player import Player
+from .player import REMEMBERED_DISCS as REMEMBERED, Player
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 
@@ -185,6 +185,25 @@ TOOLS = [
         "name": "stop_mix",
         "description": "Stop the mix playing. The decks keep playing what they have.",
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "keep_alive",
+        "description": "In a campaign set, keep the crowd meter from draining while you think: "
+                       "3 bars after the last change, Crystalize drops the next of these discs "
+                       "on its deck, never one already on a deck or one of the last 3 dropped, "
+                       "and never so often the crowd calls it overactive. Give at least 4, "
+                       "discs that can swap in for each other without spoiling the mix, such "
+                       "as two beats on one deck and two loops on another. It waits while a "
+                       "mix plays. With `stop`, it stops.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "discs": {"type": "array", "items": {
+                    "type": "object", "properties": {"disc": {"type": "string"}, "deck": DECK},
+                    "required": ["disc", "deck"]}},
+                "stop": {"type": "boolean"},
+            },
+        },
     },
     {
         "name": "drop_disc",
@@ -477,6 +496,11 @@ class Server:
         mix = self.player.status()
         if mix:
             result["mix"] = {k: v for k, v in mix.items() if k != "started_beat" and v is not None}
+        keeping = self.player.keep_alive_status()
+        if keeping:
+            if keeping.get("last"):
+                keeping["last"] = {**keeping["last"], "deck": keeping["last"]["deck"] + 1}
+            result["keep_alive"] = {k: v for k, v in keeping.items() if v is not None}
         return result
 
     def _tool_get_set(self, args: dict) -> dict:
@@ -649,6 +673,29 @@ class Server:
     def _tool_stop_mix(self, args: dict) -> dict:
         self.player.stop()
         return {"stopped": True}
+
+    def _tool_keep_alive(self, args: dict) -> dict:
+        if args.get("stop"):
+            self.player.stop_keep_alive()
+            return {"keep_alive": False}
+        entries = args.get("discs") or []
+        self._library()
+        pool = []
+        for entry in entries:
+            disc = str(entry.get("disc"))
+            known = self._discs.get(disc)
+            if known is None:
+                raise ValueError(f"FUSER has no disc named {disc}, search_songs lists them")
+            if known["owned"] is False:
+                raise ValueError(f"{disc} is from {known['song']}, DLC you do not own")
+            pool.append((disc, _deck(entry)))
+        # One fewer and every turn could find the rest on the decks or remembered
+        if len({disc for disc, _ in pool}) <= REMEMBERED:
+            raise ValueError(f"keep_alive needs at least {REMEMBERED + 1} different discs, so "
+                             f"one is always fresh to the crowd")
+        self.bridge.call("ping")
+        self.player.keep_alive(pool)
+        return {"keep_alive": True, "discs": len(pool)}
 
     def _tool_drop_disc(self, args: dict) -> dict:
         disc = str(args["disc"])

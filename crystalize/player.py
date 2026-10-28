@@ -27,6 +27,17 @@ SETTLE_SECONDS = 0.25
 
 POLL_SECONDS = 0.05
 
+# The crowd meter, as its widget's rules read in a campaign set: it drains after 6 idle
+# seconds, counts more than 3 actions in 24 beats as overactive, and remembers the last 3
+# discs, a drop of one of them being a repeat. Each command a batch carries is one action
+BUSY_BEATS, BUSY_ACTIONS, REMEMBERED_DISCS = 24, 3, 3
+
+# How long the keep-alive lets the mix sit before it changes a disc. Two bars would keep
+# 6 seconds idle from passing at any tempo but leave three drops in 24 beats, one more
+# action from overactive. Three bars lets a little drain through below 120 BPM, a second
+# or two, and a good action earns more than that costs
+KEEP_ALIVE_BARS = 3
+
 
 class Player:
     def __init__(self, bridge):
@@ -35,6 +46,13 @@ class Player:
         self._stop = threading.Event()
         self._status: dict = {}
         self._lock = threading.Lock()
+        # What the crowd has seen, from every request this player sends: when each action
+        # went out, and the discs dropped, newest last
+        self._actions: list[float] = []
+        self._dropped: list[str] = []
+        self._keeper: threading.Thread | None = None
+        self._keep_stop = threading.Event()
+        self._keep_status: dict = {}
 
     def start(self, name: str, schedule: list, end_bar: int, opening_decks: set[int]) -> None:
         """Play `schedule`, a Plan's, stopping any mix already playing. `opening_decks`
@@ -60,6 +78,32 @@ class Player:
     def status(self) -> dict | None:
         with self._lock:
             return dict(self._status) if self._status else None
+
+    def keep_alive(self, pool: list[tuple[str, int]]) -> None:
+        """Keep the crowd meter from draining while nothing else changes the mix: at the
+        first downbeat KEEP_ALIVE_BARS after the last action, drop the next disc of `pool`,
+        (disc, deck) pairs, that is neither on a deck nor one the crowd remembers. It waits
+        while a mix plays, and skips a bar that would make the set overactive."""
+        self.stop_keep_alive()
+        self._keep_stop = threading.Event()
+        with self._lock:
+            self._keep_status = {"on": True, "discs": len(pool), "dropped": 0, "last": None,
+                                 "waiting": None, "error": None}
+        self._keeper = threading.Thread(target=self._keep, args=(pool, self._keep_stop),
+                                        daemon=True)
+        self._keeper.start()
+
+    def stop_keep_alive(self) -> None:
+        if self._keeper and self._keeper.is_alive():
+            self._keep_stop.set()
+            self._keeper.join()
+        with self._lock:
+            if self._keep_status.get("on"):
+                self._keep_status["on"] = False
+
+    def keep_alive_status(self) -> dict | None:
+        with self._lock:
+            return dict(self._keep_status) if self._keep_status else None
 
     def _update(self, **fields) -> None:
         with self._lock:
@@ -152,6 +196,64 @@ class Player:
         if not commands:
             return
         self.bridge.call("batch", commands=[{"op": op, "args": args} for op, args in commands])
+        now = time.monotonic()
+        with self._lock:
+            self._actions = [t for t in self._actions if now - t < 60] + [now] * len(commands)
+            for op, args in commands:
+                if op == "drop" and not args.get("queue"):
+                    self._dropped = (self._dropped + [args["name"]])[-REMEMBERED_DISCS:]
+
+    def _keep(self, pool, stop) -> None:
+        turn = 0
+        try:
+            while not stop.is_set():
+                if self._thread and self._thread.is_alive():
+                    stop.wait(POLL_SECONDS)  # a mix keeps the crowd busy enough
+                    continue
+                beat, per_second, trip = self._clock()
+                downbeat = _next_downbeat(beat, per_second, trip)
+                wait = _wait(downbeat, beat, per_second, trip)
+                if wait >= SETTLE_SECONDS:
+                    stop.wait(POLL_SECONDS)
+                    continue
+                lands = time.monotonic() + max(wait, 0)
+                with self._lock:
+                    last = self._actions[-1] if self._actions else None
+                    busy = sum(1 for t in self._actions if lands - t < BUSY_BEATS / per_second)
+                    remembered = list(self._dropped)
+                # Half a beat short of the bars, so jitter in the clock never puts it off
+                # by a whole bar
+                idle = (KEEP_ALIVE_BARS * BEATS_PER_BAR - 0.5) / per_second
+                pick = None
+                if (last is None or lands - last >= idle) and busy < BUSY_ACTIONS:
+                    state = self.bridge.call("state")
+                    held = {d.get("playing") for d in state["decks"] if d}
+                    for i in range(len(pool)):
+                        disc, deck = pool[(turn + i) % len(pool)]
+                        if disc not in held and disc not in remembered:
+                            pick, turn = (disc, deck), (turn + i + 1) % len(pool)
+                            break
+                    with self._lock:
+                        self._keep_status["waiting"] = None if pick else \
+                            "every disc is on a deck or one the crowd remembers"
+                if pick is None:
+                    stop.wait(max(wait, 0) + POLL_SECONDS)  # past this downbeat
+                    continue
+                # The state took a round trip, so the wait is measured again
+                beat, per_second, trip = self._clock()
+                wait = _wait(downbeat, beat, per_second, trip)
+                if wait > 0 and stop.wait(wait):
+                    break
+                self._send([("drop", {"name": pick[0], "deck": pick[1], "queue": False})])
+                with self._lock:
+                    self._keep_status["dropped"] += 1
+                    self._keep_status["last"] = {"disc": pick[0], "deck": pick[1]}
+        except GameError as e:
+            with self._lock:
+                self._keep_status["error"] = str(e)
+        finally:
+            with self._lock:
+                self._keep_status["on"] = False
 
 
 def _next_downbeat(beat: float, per_second: float, trip: float) -> int:

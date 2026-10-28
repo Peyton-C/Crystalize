@@ -42,6 +42,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `save_mix`, `load_mix`, `list_mixes` | Saves a plan under a name, gives it back to change, and lists them |
 | `play_mix` | Plays a plan or a saved mix, each step on its bar |
 | `stop_mix` | Stops the mix. The decks keep playing what they have |
+| `keep_alive` | Swaps discs from a list now and then, so a campaign set's crowd meter does not drain while the agent thinks |
 | `drop_disc`, `drop_queue` | Drop outside a plan, timed to the next downbeat as `play_mix` times a bar |
 | `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck` | Act on the game at once, outside a plan |
 
@@ -107,6 +108,8 @@ When the decks are empty, bar 0 starts at once. When something is playing, bar 0
 
 ## Campaign
 Crystalize plays campaign sets as it plays freestyle, and any disc in the library can be dropped, not only the set's crate. Drops, ejects and the rest count toward goals and crowd requests as if you had made them, and a drop `play_mix`, `drop_disc` or `drop_queue` makes counts as one on the downbeat. To change one deck, use `drop_disc`: it waits for the next downbeat, up to a bar, and returns once the drop is sent. A plan that repeats the other decks' discs at bar 0 keeps them, so the crowd does not count them as repeats.
+
+The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 beats overactive, and counts a drop of one of the last 3 discs as a repeat. `keep_alive` works inside those rules. 3 bars after the last change, made by anyone, it drops the next disc of its list on that disc's deck, skipping one already on a deck or among the last 3 dropped, and skipping the bar if a drop would make the set overactive. It waits while a mix plays, and `get_state` shows what it last dropped. Give it at least 4 discs that can swap in for each other, such as two beats on one deck and two on another, and stop it with `stop`.
 
 `get_set` reports the set as FUSER keeps it:
 

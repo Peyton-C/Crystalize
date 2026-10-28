@@ -454,3 +454,18 @@ def test_get_set_hides_the_meter_before_it_is_on(talk, monkeypatch):
     result, _ = call(talk, "get_set")
     assert result["crowd_meter_on"] is False
     assert not {"crowd_meter", "crowd", "crowd_warnings"} & set(result)
+
+
+def test_keep_alive_needs_four_discs(talk, fake):
+    text, failed = call(talk, "keep_alive", discs=[
+        {"disc": "callmemaybebt", "deck": 1}, {"disc": "mrbrightsidebs", "deck": 2},
+        {"disc": "badguybs", "deck": 2}])
+    assert failed and "at least 4" in text
+
+
+def test_keep_alive_status_counts_decks_from_1(talk, fake, monkeypatch):
+    from crystalize.player import Player
+    monkeypatch.setattr(Player, "keep_alive_status",
+                        lambda self: {"on": True, "last": {"disc": "badguybs", "deck": 1}})
+    result, _ = call(talk, "get_state")
+    assert result["keep_alive"]["last"] == {"disc": "badguybs", "deck": 2}

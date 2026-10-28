@@ -242,3 +242,68 @@ def test_on_downbeat_with_nothing_playing_goes_at_once():
     fuser = ClockBridge(beat=13.5)
     Player(fuser).on_downbeat([("drop_queue", {})])
     assert fuser.requests == [["drop_queue"]]
+
+
+POOL = [("a", 0), ("b", 0), ("c", 1), ("d", 1)]
+
+
+def keeper(beat=0.0, playing=("x", None, None, None)):
+    fuser = ClockBridge(beat=beat, playing=playing)
+    p = Player(fuser)
+    p.keep_alive(POOL)
+    return fuser, p
+
+
+def test_keep_alive_drops_then_lets_three_bars_pass():
+    fuser, p = keeper(beat=3.95)
+    wait_until(lambda: len(fuser.sent) == 1)  # nothing has happened yet, so at once
+    assert fuser.sent[0][1:] == ("drop", {"name": "a", "deck": 0, "queue": False})
+    # Idle is measured in seconds, and only milliseconds have passed, however far the
+    # clock moves
+    for beat in (7.95, 11.95, 15.95):
+        fuser.to(beat)
+        time.sleep(0.03)
+    assert len(fuser.sent) == 1
+    p.stop_keep_alive()
+    assert p.keep_alive_status()["on"] is False
+
+
+def test_keep_alive_drops_again_once_idle(monkeypatch):
+    monkeypatch.setattr(player_module, "KEEP_ALIVE_BARS", 0)
+    fuser, p = keeper(beat=3.95)
+    wait_until(lambda: len(fuser.sent) == 1)
+    fuser.to(7.95)
+    wait_until(lambda: len(fuser.sent) == 2)
+    assert fuser.sent[1][2]["name"] == "b"  # the next in turn
+    p.stop_keep_alive()
+
+
+def test_keep_alive_skips_discs_on_a_deck_or_remembered():
+    fuser, p = keeper(beat=3.95, playing=("a", None, None, None))
+    wait_until(lambda: len(fuser.sent) == 1)
+    assert fuser.sent[0][2]["name"] == "b"  # a is playing
+    p.stop_keep_alive()
+    assert p.keep_alive_status()["last"] == {"disc": "b", "deck": 0}
+
+
+def test_keep_alive_waits_out_a_busy_crowd(monkeypatch):
+    # Three actions just went out: a fourth inside 24 beats is overactive
+    fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
+    p = Player(fuser)
+    p._actions = [time.monotonic()] * 3
+    monkeypatch.setattr(player_module, "KEEP_ALIVE_BARS", 0)
+    p.keep_alive(POOL)
+    time.sleep(0.1)
+    assert fuser.sent == []
+    p.stop_keep_alive()
+
+
+def test_keep_alive_waits_while_a_mix_plays():
+    fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
+    p = Player(fuser)
+    p.start("test", SCHEDULE, 6, {0})
+    p.keep_alive(POOL)
+    time.sleep(0.1)
+    assert all(args["name"] not in "abcd" for _, op, args in fuser.sent if op == "drop")
+    p.stop()
+    p.stop_keep_alive()
