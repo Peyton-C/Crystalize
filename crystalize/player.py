@@ -73,6 +73,9 @@ class Player:
         self._heard: set[frozenset] = set()
         self._played: dict[str, int] = {}
         self._deck_since: dict[int, float] = {}  # when the keep-alive last changed each deck
+        # Decks this player muted and has not unmuted. FUSER's state does not say, and a
+        # disc dropped on a muted deck earns nothing: no goal, request or crowd counts it
+        self._muted: set[int] = set()
         # When the set was last read and how many measures its open crowd requests had left
         self._request_hold: tuple[float, int] | None = None
 
@@ -253,6 +256,16 @@ class Player:
     def _send(self, commands) -> None:
         if not commands:
             return
+        with self._lock:
+            unmute = []
+            for op, args in commands:
+                if op == "drop" and not args.get("queue") and args["deck"] in self._muted \
+                        and ("mute", {"deck": args["deck"], "on": False}) not in commands:
+                    unmute.append(("mute", {"deck": args["deck"], "on": False}))
+            commands = unmute + list(commands)
+            for op, args in commands:
+                if op == "mute":
+                    (self._muted.add if args.get("on") else self._muted.discard)(args["deck"])
         self.bridge.call("batch", commands=[{"op": op, "args": args} for op, args in commands])
         now = time.monotonic()
         with self._lock:

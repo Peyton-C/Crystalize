@@ -307,6 +307,17 @@ def test_a_pace_asked_for_goes_past_a_busy_crowd():
     p.stop_keep_alive()
 
 
+def test_a_drop_on_a_muted_deck_unmutes_it_in_the_same_request():
+    fuser = ClockBridge()
+    p = Player(fuser)
+    p._send([("mute", {"deck": 2, "on": True})])
+    p._send([("drop", {"name": "a", "deck": 2, "queue": False})])
+    assert fuser.requests[-1] == ["mute", "drop"]
+    assert fuser.sent[-2][2] == {"deck": 2, "on": False}
+    p._send([("drop", {"name": "b", "deck": 2, "queue": False})])
+    assert fuser.requests[-1] == ["drop"]  # already unmuted
+
+
 def test_keep_alive_waits_while_a_mix_plays():
     fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
     p = Player(fuser)

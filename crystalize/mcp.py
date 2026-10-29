@@ -49,6 +49,9 @@ POINTS = {"requests": "RequestPoints", "request_combos": "RequestComboBonusPoint
           "goals": "ShowGoalPoints", "perfect_timing": "PerfectTimingBonusPoints",
           "early_timing": "EarlyTimingBonusPoints", "late_timing": "LateTimingBonusPoints",
           "bad_timing": "BadTimingBonusPoints", "crowd_meter": "CrowdMeterPoints"}
+# Discs keep_alive picks for each deck it is asked to fill. Two decks of 8 make 64 mixes,
+# more than a set has bars, and more than 8 reaches into songs that fit the session worse
+FILL_DISCS = 8
 # The meter level await_event warns below unless told otherwise. It drains a point a
 # second once idle, so this is half a minute from failing the set
 METER_LOW = 30
@@ -256,6 +259,14 @@ TOOLS = [
                          "description": "Change a disc this many bars after the last change "
                                         "instead of 3, even past what the crowd calls "
                                         "overactive. 1 holds freshness above 80"},
+                "fill": {"type": "array", "description": "Decks for Crystalize to choose discs "
+                         "for, from songs that fit the session's key and tempo, the best fits "
+                         "first, up to 8 a deck, alongside any in discs",
+                         "items": {"type": "object", "properties": {
+                             "deck": DECK, "disc_type": {"enum": ["beat", "bass", "loop", "lead"]},
+                             "genre": {"type": "string", "description": "Only this genre, "
+                                       "for a goal that wants it kept"}},
+                             "required": ["deck", "disc_type"]}},
                 "stop": {"type": "boolean"},
             },
         },
@@ -395,11 +406,11 @@ PROMPTS = [
             "two requests are open, one disc that fills both earns a combo bonus, whatever they "
             "ask for. Never drop one of the last 3 discs: the crowd counts it a repeat.\n"
             "5. Once the crowd meter is on, keep_alive with bars 1 holds it up while you work, "
-            "and waits while a request is open so it never fills one for you. Give it 12 or "
-            "more discs on the decks your goals are not using, such as beats on one and loops "
-            "on another: freshness pays most for a mix not heard yet, and few discs soon run "
-            "out of them, and give it a new list when a goal needs those decks or a kind of disc "
-            "they would replace. A drop it had due can still land just after a new list, so check "
+            "and waits while a request is open so it never fills one for you. Give it the "
+            "decks your goals are not using with fill, such as loops on one and leads on "
+            "another, and Crystalize chooses discs that fit the session; give it a new fill "
+            "when a goal needs those decks or a kind of disc they would replace, with genre "
+            "when a goal wants one kept. A drop it had due can still land just after a new list, so check "
             "get_state before a goal that counts discs. change_count adds ejects, which "
             "freshness pays for, but not during such a goal.\n"
             "6. At set_ended, keep_alive with stop, and say the stars and what cost points: "
@@ -953,6 +964,8 @@ class Server:
             if known["owned"] is False:
                 raise ValueError(f"{disc} is from {known['song']}, DLC you do not own")
             pool.append((disc, _deck(entry)))
+        if args.get("fill"):
+            pool += self._fill(args["fill"], {disc for disc, _ in pool})
         # One fewer and every turn could find the rest on the decks or remembered
         if len({disc for disc, _ in pool}) <= REMEMBERED:
             raise ValueError(f"keep_alive needs at least {REMEMBERED + 1} different discs, so "
@@ -964,9 +977,43 @@ class Server:
         self.player.keep_alive(pool, bool(args.get("change_count")),
                                None if bars is None else int(bars))
         result = {"keep_alive": True, "discs": len(pool), "change_count": bool(args.get("change_count"))}
+        if args.get("fill"):
+            result["chose"] = [{"disc": disc, "deck": deck + 1} for disc, deck in pool
+                               if disc not in {str(e.get("disc")) for e in entries}]
         if bars is not None:
             result["bars"] = int(bars)
         return result
+
+    def _fill(self, fill: list, taken: set) -> list[tuple[str, int]]:
+        """Discs for keep_alive to swap in on each deck of `fill`: of the type asked, from
+        songs FUSER would shift and stretch little to play in the session's key and tempo,
+        least stretched first, then the same key before a neighbouring one."""
+        state = self.bridge.call("state")
+        key = music.key_name(state["key"], state["mode"])
+        if not key or not state.get("bpm"):
+            raise ValueError("fill needs the session's key and tempo: drop a disc first")
+        session = {"key": key, "bpm": state["bpm"]}
+        order = {"same": 0, "relative": 1, "fifth": 2}
+        songs = [s for s in self._library() if s["owned"] and _near(session, s)]
+        songs.sort(key=lambda s: (
+            abs(music.stretch_percent(s["bpm"], state["bpm"]) or 0),
+            order.get(music.key_relation(music.parse_key(key), music.parse_key(s["key"])), 3)))
+        pool = []
+        for entry in fill:
+            deck, want, genre = _deck(entry), entry["disc_type"], entry.get("genre")
+            chosen = 0
+            for song in songs:
+                if chosen >= FILL_DISCS:
+                    break
+                if genre and song["genre"] != genre:
+                    continue
+                for disc in song["discs"]:
+                    if disc["type"] == want and disc["name"] not in taken:
+                        pool.append((disc["name"], deck))
+                        taken.add(disc["name"])
+                        chosen += 1
+                        break
+        return pool
 
     def _tool_drop_disc(self, args: dict) -> dict:
         disc = str(args["disc"])

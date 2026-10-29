@@ -644,3 +644,21 @@ def test_play_set_prompt_needs_no_arguments(talk):
     [reply] = talk({"id": 1, "method": "prompts/get", "params": {"name": "play_set"}})
     text = reply["result"]["messages"][0]["content"]["text"]
     assert "await_event" in text and "on_pickup" in text and "keep_alive" in text
+
+
+def test_keep_alive_fill_picks_discs_that_fit_the_session(fake, monkeypatch):
+    # The session is G#m at 120 (STATE): the closest tempo comes first, a clashing key
+    # and DLC not owned never
+    def song(id_, bpm, key, genre="Pop", owned=True):
+        return {"id": id_, "title": id_, "artist": None, "bpm": bpm, "key": key, "genre": genre,
+                "year": 2000, "owned": owned,
+                "discs": [{"name": id_ + "lp", "type": "loop"}, {"name": id_ + "ld", "type": "lead"}]}
+    library = [song("slower", 113, "G#m"), song("exact", 120, "G#m"), song("relative", 121, "B"),
+               song("clash", 120, "C"), song("dlc", 120, "G#m", owned=False),
+               song("rock", 120, "G#m", genre="Rock")]
+    server = mcp.Server(fake, None, None)
+    monkeypatch.setattr(server, "_library", lambda: library)
+    pool = server._fill([{"deck": 3, "disc_type": "loop"},
+                         {"deck": 4, "disc_type": "lead", "genre": "Rock"}], set())
+    assert pool == [("exactlp", 2), ("rocklp", 2), ("relativelp", 2), ("slowerlp", 2),
+                    ("rockld", 3)]
