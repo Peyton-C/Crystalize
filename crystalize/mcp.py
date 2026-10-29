@@ -238,7 +238,8 @@ TOOLS = [
                        "and never so often the crowd calls it overactive. Give at least 4, and 12 or more keeps the mix fresh, "
                        "discs that can swap in for each other without spoiling the mix, such "
                        "as two beats on one deck and two loops on another. It waits while a "
-                       "mix plays. With `stop`, it stops.",
+                       "mix plays or a crowd request is open, leaving the request to you. "
+                       "With `stop`, it stops.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -251,6 +252,10 @@ TOOLS = [
                                                 "also changes how many decks play, which "
                                                 "freshness pays for. Not during a goal that "
                                                 "counts discs"},
+                "bars": {"type": "integer", "minimum": 1, "maximum": 8,
+                         "description": "Change a disc this many bars after the last change "
+                                        "instead of 3, even past what the crowd calls "
+                                        "overactive. 1 holds freshness above 80"},
                 "stop": {"type": "boolean"},
             },
         },
@@ -387,7 +392,8 @@ PROMPTS = [
             "song is named with its artist, and two songs can share a title, so query both. When "
             "two requests are open, one disc that fills an instrument and a song earns a combo "
             "bonus. Never drop one of the last 3 discs: the crowd counts it a repeat.\n"
-            "5. Once the crowd meter is on, keep_alive holds it up while you work. Give it 12 or "
+            "5. Once the crowd meter is on, keep_alive holds it up while you work, and waits "
+            "while a request is open so it never fills one for you. Give it 12 or "
             "more discs on the decks your goals are not using, such as beats on one and loops "
             "on another: freshness pays most for a mix not heard yet, and few discs soon run "
             "out of them, and give it a new list when a goal needs those decks or a kind of disc "
@@ -610,6 +616,7 @@ class Server:
     def _tool_get_set(self, args: dict) -> dict:
         raw = self.bridge.call("set_state")
         self._seen = raw
+        self._hold_keep_alive(raw)
         return self._set_view(raw)
 
     def _tool_await_event(self, args: dict) -> dict:
@@ -631,9 +638,21 @@ class Server:
                 continue
             events = self._events(self._seen, raw, below)
             self._seen = raw
+            self._hold_keep_alive(raw)
             if events or time.monotonic() >= deadline:
                 return {"events": events, "set": self._set_view(raw)}
             time.sleep(AWAIT_POLL_SECONDS)
+
+    def _hold_keep_alive(self, raw: dict) -> None:
+        """Hold the keep-alive off until the last active crowd request ends, so the agent
+        fills it, two at once with one disc where it can."""
+        measure, left = raw.get("measure"), 0
+        for r in raw.get("requests") or []:
+            start, bars = r.get("start_measure"), r.get("bars")
+            if music._named(music.REQUEST_STATES, r.get("state")) == "active" and \
+                    isinstance(measure, int) and isinstance(start, int) and isinstance(bars, int):
+                left = max(left, start + bars - measure)
+        self.player.hold_for_requests(left)
 
     def _events(self, before: dict | None, after: dict, below) -> list[dict]:
         """What changed between two reads of the set, in get_set's words. Requests and
@@ -773,6 +792,10 @@ class Server:
             result["crowd"] = band
         if crowd.get("WarningCount"):
             result["crowd_warnings"] = crowd["WarningCount"]
+        # What a section pays for ending in each band, which differs between sets
+        bonus = {k: v for k, v in (show.get("meter_bonus") or {}).items() if isinstance(v, int)}
+        if bonus:
+            result["crowd_band_bonus"] = bonus
         fresh = raw.get("freshness") or {}
         low, high, value = fresh.get("min"), fresh.get("max"), fresh.get("value")
         if all(isinstance(v, (int, float)) for v in (low, high, value)) and high > low:
@@ -932,8 +955,15 @@ class Server:
             raise ValueError(f"keep_alive needs at least {REMEMBERED + 1} different discs, so "
                              f"one is always fresh to the crowd")
         self.bridge.call("ping")
-        self.player.keep_alive(pool, bool(args.get("change_count")))
-        return {"keep_alive": True, "discs": len(pool), "change_count": bool(args.get("change_count"))}
+        bars = args.get("bars")
+        if bars is not None and not 1 <= int(bars) <= 8:
+            raise ValueError("bars is 1 to 8")
+        self.player.keep_alive(pool, bool(args.get("change_count")),
+                               None if bars is None else int(bars))
+        result = {"keep_alive": True, "discs": len(pool), "change_count": bool(args.get("change_count"))}
+        if bars is not None:
+            result["bars"] = int(bars)
+        return result
 
     def _tool_drop_disc(self, args: dict) -> dict:
         disc = str(args["disc"])

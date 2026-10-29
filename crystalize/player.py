@@ -43,7 +43,10 @@ BUSY_BEATS, BUSY_ACTIONS, REMEMBERED_DISCS = 24, 3, 3
 # How long the keep-alive lets the mix sit before it changes a disc. Two bars would keep
 # 6 seconds idle from passing at any tempo but leave three drops in 24 beats, one more
 # action from overactive. Three bars lets a little drain through below 120 BPM, a second
-# or two, and a good action earns more than that costs
+# or two, and a good action earns more than that costs. It is the pace when none is asked
+# for, and the only one held to the overactive rule: a 5 star player was seen changing a
+# disc nearly every bar and ending each section in the top band, which this pace never
+# reached, so a faster one asked for goes as asked
 KEEP_ALIVE_BARS = 3
 
 # Unanswered commands in a row before the keep-alive takes FUSER for gone
@@ -70,6 +73,8 @@ class Player:
         self._heard: set[frozenset] = set()
         self._played: dict[str, int] = {}
         self._deck_since: dict[int, float] = {}  # when the keep-alive last changed each deck
+        # When the set was last read and how many measures its open crowd requests had left
+        self._request_hold: tuple[float, int] | None = None
 
     def start(self, name: str, schedule: list, end_bar: int, opening_decks: set[int]) -> None:
         """Play `schedule`, a Plan's, stopping any mix already playing. `opening_decks`
@@ -96,7 +101,8 @@ class Player:
         with self._lock:
             return dict(self._status) if self._status else None
 
-    def keep_alive(self, pool: list[tuple[str, int]], change_count: bool = False) -> None:
+    def keep_alive(self, pool: list[tuple[str, int]], change_count: bool = False,
+                   bars: int | None = None) -> None:
         """Keep the crowd meter from draining while nothing else changes the mix: at the
         first downbeat KEEP_ALIVE_BARS after the last action, drop a disc of `pool`,
         (disc, deck) pairs, that is neither on a deck nor one the crowd remembers. It waits
@@ -104,14 +110,18 @@ class Player:
 
         With `change_count`, it takes turns ejecting the pool's longest-playing deck and
         filling a pool deck left empty, so every change also changes how many decks play,
-        which freshness pays for on top of a new mix."""
+        which freshness pays for on top of a new mix.
+
+        With `bars`, it changes a disc that many bars after the last action instead, and
+        no longer skips a bar for being overactive."""
         self.stop_keep_alive()
         self._keep_stop = threading.Event()
         with self._lock:
             self._keep_status = {"on": True, "discs": len(pool), "dropped": 0, "last": None,
                                  "waiting": None, "error": None}
         self._keeper = threading.Thread(target=self._keep,
-                                        args=(pool, self._keep_stop, change_count), daemon=True)
+                                        args=(pool, self._keep_stop, change_count, bars),
+                                        daemon=True)
         self._keeper.start()
 
     def stop_keep_alive(self) -> None:
@@ -121,6 +131,14 @@ class Player:
         with self._lock:
             if self._keep_status.get("on"):
                 self._keep_status["on"] = False
+
+    def hold_for_requests(self, measures: int) -> None:
+        """Hold the keep-alive off for `measures` from now, while a crowd request is open.
+        A disc it dropped could fill the request by chance, and with two open that spends
+        the one a combo needed. Counting from now lets the hold lapse on its own when
+        nobody reads the set again, and 0 ends it."""
+        with self._lock:
+            self._request_hold = (time.monotonic(), measures) if measures > 0 else None
 
     def keep_alive_status(self) -> dict | None:
         with self._lock:
@@ -248,12 +266,12 @@ class Player:
         with self._lock:
             self._heard.add(_mix(decks))
 
-    def _keep(self, pool, stop, change_count=False) -> None:
+    def _keep(self, pool, stop, change_count=False, bars=None) -> None:
         turn, missed = 0, 0
         try:
             while not stop.is_set():
                 try:
-                    turn = self._keep_turn(pool, turn, stop, change_count)
+                    turn = self._keep_turn(pool, turn, stop, change_count, bars)
                     missed = 0
                 except GameError as e:
                     # FUSER now and then leaves one command unanswered and takes the next,
@@ -272,7 +290,7 @@ class Player:
             with self._lock:
                 self._keep_status["on"] = False
 
-    def _keep_turn(self, pool, turn, stop, change_count=False) -> int:
+    def _keep_turn(self, pool, turn, stop, change_count=False, bars=None) -> int:
         """One look at the clock, and a drop or an eject if one is due. Returns the turn to
         start the next pick from."""
         if self._thread and self._thread.is_alive():
@@ -289,11 +307,20 @@ class Player:
             last = self._actions[-1] if self._actions else None
             busy = sum(1 for t in self._actions if lands - t < BUSY_BEATS / per_second)
             remembered = list(self._dropped)
+            hold = self._request_hold
+        if hold and lands < hold[0] + hold[1] * BEATS_PER_BAR / per_second:
+            with self._lock:
+                self._keep_status["waiting"] = "a crowd request is open"
+            stop.wait(max(wait, 0) + POLL_SECONDS)
+            return turn
+        with self._lock:
+            if self._keep_status.get("waiting") == "a crowd request is open":
+                self._keep_status["waiting"] = None
         # Half a beat short of the bars, so jitter in the clock never puts it off
         # by a whole bar
-        idle = (KEEP_ALIVE_BARS * BEATS_PER_BAR - 0.5) / per_second
+        idle = ((KEEP_ALIVE_BARS if bars is None else bars) * BEATS_PER_BAR - 0.5) / per_second
         pick = None
-        if (last is None or lands - last >= idle) and busy < BUSY_ACTIONS:
+        if (last is None or lands - last >= idle) and (bars is not None or busy < BUSY_ACTIONS):
             state = self.bridge.call("state")
             decks = [d.get("playing") if d else None for d in state["decks"]]
             self._hear(decks)

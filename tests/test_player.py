@@ -298,6 +298,15 @@ def test_keep_alive_waits_out_a_busy_crowd(monkeypatch):
     p.stop_keep_alive()
 
 
+def test_a_pace_asked_for_goes_past_a_busy_crowd():
+    fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
+    p = Player(fuser)
+    p._actions = [time.monotonic() - 1.9] * 3  # a bar ago at 120 BPM, and overactive
+    p.keep_alive(POOL, bars=1)
+    wait_until(lambda: len(fuser.sent) == 1)
+    p.stop_keep_alive()
+
+
 def test_keep_alive_waits_while_a_mix_plays():
     fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
     p = Player(fuser)
@@ -306,6 +315,32 @@ def test_keep_alive_waits_while_a_mix_plays():
     time.sleep(0.1)
     assert all(args["name"] not in "abcd" for _, op, args in fuser.sent if op == "drop")
     p.stop()
+    p.stop_keep_alive()
+
+
+def test_keep_alive_holds_off_while_a_request_is_open(monkeypatch):
+    monkeypatch.setattr(player_module, "KEEP_ALIVE_BARS", 0)
+    fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
+    p = Player(fuser)
+    p.hold_for_requests(4)  # 8 seconds at 120 BPM, past this test
+    p.keep_alive(POOL)
+    time.sleep(0.1)
+    assert fuser.sent == []
+    assert p.keep_alive_status()["waiting"] == "a crowd request is open"
+    p.hold_for_requests(0)  # the request settled
+    fuser.to(7.95)
+    wait_until(lambda: len(fuser.sent) == 1)
+    p.stop_keep_alive()
+
+
+def test_a_request_hold_lapses_on_its_own(monkeypatch):
+    monkeypatch.setattr(player_module, "KEEP_ALIVE_BARS", 0)
+    fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
+    p = Player(fuser)
+    p.hold_for_requests(1)
+    p._request_hold = (time.monotonic() - 3, 1)  # a measure is 2 seconds at 120 BPM
+    p.keep_alive(POOL)
+    wait_until(lambda: len(fuser.sent) == 1)
     p.stop_keep_alive()
 
 

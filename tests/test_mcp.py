@@ -576,6 +576,17 @@ def test_await_event_returns_what_happened_meanwhile(fake, monkeypatch):
     assert result["set"]["requests"][0]["wants"] == "a disc played on Synth"
 
 
+def test_reading_the_set_holds_the_keep_alive_while_a_request_is_open(fake, monkeypatch):
+    server = mcp.Server(fake, None, None)
+    held = []
+    monkeypatch.setattr(server.player, "hold_for_requests", held.append)
+    monkeypatch.setitem(SET_STATE, "requests", [request(1), request(0, start=90)])
+    server._tool_get_set({})
+    monkeypatch.setitem(SET_STATE, "requests", [request(2), request(0, start=90)])
+    server._tool_await_event({"seconds": 0})
+    assert held == [12, 0]  # 82 + 14 - 84; a request still coming holds nothing
+
+
 def test_await_event_times_out_with_the_set(fake, monkeypatch):
     monkeypatch.setattr(mcp, "AWAIT_POLL_SECONDS", 0.01)
     server = mcp.Server(fake, None, None)
