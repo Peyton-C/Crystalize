@@ -156,6 +156,10 @@ local world = {
     SkillStat_Freshness = { object("Freshness", {
         GetCurStatValue = function() return 0.5 end,
         GetMinValue = function() return 0 end, GetMaxValue = function() return 1 end,
+        IsPassingConditions = function() return false end,
+        GetPointsEarnedThisInterval = function() return 0 end,
+        IsCurrentMixUnique = function() return true end,
+        _freshnessStatData = { TargetZoneRange = { X = 0.4, Y = 0.7 } },
     }) },
     -- The set features two songs, and the open goal's config points at the second
     ShowFlowMgr = { object("ShowFlowMgr", { GetScore = function() return 1500 end,
@@ -195,6 +199,8 @@ local world = {
                 return "WBP_ShowsCrowdMeter_C /Game/Gameplay/Hud/WBP_Hud.WidgetArchetype:WidgetTree_0.CrowdMeter"
             end }),
         object("LiveMeter", { CurHealth = 62, MaxHealth = 100, CurHealthState = 2, WarningCount = 0,
+            PrevWarningCount = 0, OveractivityEnabled = true, OveractiveThreshold = 3,
+            DrainPaused = false, FailurePending = false, ActionTimes = tarrayOf({ 80, 82 }),
             GetFullName = function()
                 return "WBP_ShowsCrowdMeter_C /Engine/Transient.GameEngine_1:WBP_Hud.WidgetTree_0.CrowdMeter"
             end }),

@@ -76,6 +76,7 @@ class Player:
         # Decks this player muted and has not unmuted. FUSER's state does not say, and a
         # disc dropped on a muted deck earns nothing: no goal, request or crowd counts it
         self._muted: set[int] = set()
+        self.on_send = None  # told every batch sent, for the set's log
         # When the set was last read and how many measures its open crowd requests had left
         self._request_hold: tuple[float, int] | None = None
 
@@ -267,6 +268,8 @@ class Player:
                 if op == "mute":
                     (self._muted.add if args.get("on") else self._muted.discard)(args["deck"])
         self.bridge.call("batch", commands=[{"op": op, "args": args} for op, args in commands])
+        if self.on_send:
+            self.on_send(commands)
         now = time.monotonic()
         with self._lock:
             self._actions = [t for t in self._actions if now - t < 60] + [now] * len(commands)

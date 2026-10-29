@@ -163,10 +163,13 @@ def test_set_state(ask):
     assert [f["genre"] for f in done["filters"]] == [6]  # a stat goal's, from its mix filters
     assert open_["filters"] == [{"type": 2, "disc_type": 0, "instrument": 0, "genre": 8,
                                  "years": 0, "songs": [], "discs": []}]
-    assert state["freshness"] == {"value": 0.5, "min": 0, "max": 1}
+    assert state["freshness"] == {"value": 0.5, "min": 0, "max": 1, "in_zone": False,
+                                  "zone_points": 0, "unique_mix": True, "zone": [0.4, 0.7]}
     # The live meter, not the first one found, which sits frozen at its defaults
     assert state["crowd"] == {"CurHealth": 62, "MaxHealth": 100, "CurHealthState": 2,
-                              "WarningCount": 0}
+                              "WarningCount": 0, "PrevWarningCount": 0,
+                              "OveractivityEnabled": True, "OveractiveThreshold": 3,
+                              "DrainPaused": False, "FailurePending": False, "ActionCount": 2}
     assert state["show"]["score"] == 1500
     assert state["show"]["ending"] is False
     results = state["show"]["results"]

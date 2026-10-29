@@ -515,11 +515,26 @@ function ops.set_state()
     -- is not the crowd meter, though it looked like one: it read 0 with the meter halfway
     try("freshness", function()
         local stat = first("SkillStat_Freshness")
-        return {
+        local out = {
             value = ask(stat, "GetCurStatValue"),
             min = ask(stat, "GetMinValue"),
             max = ask(stat, "GetMaxValue"),
+            -- Freshness has a target zone the set pays for staying in, by the interval,
+            -- and scales its bonuses down above it: higher is not simply better
+            in_zone = ask(stat, "IsPassingConditions"),
+            zone_points = ask(stat, "GetPointsEarnedThisInterval"),
+            unique_mix = ask(stat, "IsCurrentMixUnique"),
+            zone = NULL,
         }
+        -- A struct, which read cannot show, so its two ends are read here
+        local ok, zone = pcall(function()
+            local range = stat._freshnessStatData.TargetZoneRange
+            return array({ plain(range.X), plain(range.Y) })
+        end)
+        if ok then
+            out.zone = zone
+        end
+        return out
     end)
     -- The crowd meter has no C++ home the dump shows: its widget, a Blueprint, keeps the
     -- health and the rules that move it. Freshness and the VFX manager's CrowdMeterPercent
@@ -539,10 +554,21 @@ function ops.set_state()
             error("no crowd meter has started", 0)
         end
         local out = {}
-        for _, field in ipairs({ "CurHealth", "MaxHealth", "CurHealthState", "WarningCount" }) do
+        -- Past the health, what could stop actions counting: the crowd's overactivity
+        -- rule, and a drain or failure the meter has paused for
+        for _, field in ipairs({ "CurHealth", "MaxHealth", "CurHealthState", "WarningCount",
+                                 "PrevWarningCount", "OveractivityEnabled", "OveractiveThreshold",
+                                 "DrainPaused", "FailurePending" }) do
             local ok, v = pcall(function() return widget[field] end)
-            out[field] = ok and plain(v) or NULL
+            if ok and type(v) == "boolean" then
+                out[field] = v
+            else
+                out[field] = ok and plain(v) or NULL
+            end
         end
+        -- The actions inside its overactivity window, as it keeps them
+        local ok, n = pcall(function() return #items(widget.ActionTimes) end)
+        out.ActionCount = ok and n or NULL
         return out
     end)
     try("show", function()
@@ -556,6 +582,13 @@ function ops.set_state()
             -- The show's objects stay on the results screen, frozen, so a set that ended
             -- still reads; FUSER counting it out is what says it is over
             ending = ask(flow, "HasShowEndCountdownBeenBroadcast"),
+            -- Whether the show is running or paused between sections, which may be when
+            -- actions stop counting
+            started = ask(flow, "DidShowStart"),
+            looping = ask(flow, "IsCurrentSectionLooping"),
+            section_warning = ask(flow, "HasSectionWarningBeenBroadcast"),
+            replaying_break = ask(flow, "IsReplayingShowBreakMessage"),
+            has_goals = ask(flow, "DoesCurrentSectionHaveShowGoals"),
             -- The points a section ends on for each band of the meter, which say what band
             -- the crowd-meter points came from
             meter_bonus = {

@@ -662,3 +662,38 @@ def test_keep_alive_fill_picks_discs_that_fit_the_session(fake, monkeypatch):
                          {"deck": 4, "disc_type": "lead", "genre": "Rock"}], set())
     assert pool == [("exactlp", 2), ("rocklp", 2), ("relativelp", 2), ("slowerlp", 2),
                     ("rockld", 3)]
+
+
+def test_a_goal_ended_undone_is_named(fake, monkeypatch):
+    server = mcp.Server(fake, None, None)
+    before = read(goals=[goal("Drop a {btType}"), goal("a", True, active=False)])
+    after = {**read(goals=[goal("Drop a {btType}", active=False), goal("a", True, active=False)]),
+             "show": {"ending": True, "results": {"stars": 3.5}}}
+    ended = server._events(before, after, 30)[-1]
+    assert ended == {"event": "set_ended", "stars": 3.5, "missed": ["Drop a beat (blue)"]}
+    assert server._set_view(after)["goals_missed"] == ["Drop a beat (blue)"]
+
+
+def test_get_set_shows_what_could_stop_actions_counting():
+    server = mcp.Server(FakeBridge(), None, None)
+    view = server._set_view({**read(meter=100), "freshness": {
+        "value": 0.85, "min": 0, "max": 1, "zone": [0.4, 0.7], "in_zone": False},
+        "crowd": {"CurHealth": 100, "MaxHealth": 100, "ActionCount": 6,
+                  "OveractiveThreshold": 3, "OveractivityEnabled": True, "DrainPaused": True}})
+    assert view["freshness_zone"] == [40, 70] and view["in_freshness_zone"] is False
+    assert view["crowd_actions"] == 6 and view["overactive"] is True
+    assert view["meter_paused"] is True
+
+
+def test_a_set_is_logged_from_its_first_read_to_its_end(fake, monkeypatch, tmp_path):
+    monkeypatch.setattr(mcp, "AWAIT_POLL_SECONDS", 0.01)
+    server = mcp.Server(fake, None, None)
+    server._tool_get_set({})
+    server.player._send([("drop", {"name": "a", "deck": 2, "queue": False})])
+    monkeypatch.setitem(SET_STATE, "show", {**SET_STATE["show"], "ending": True})
+    server._tool_await_event({"seconds": 0})
+    assert not server._log.open
+    lines = [json.loads(l) for l in open(server._log.path, encoding="utf-8")]
+    assert lines[0]["set"]["measure"] == 84
+    assert lines[1]["sent"] == [["drop", {"name": "a", "deck": 2, "queue": False}]]
+    assert {"event": "set_ended"} in [l["set"].get("event") for l in lines if "set" in l]

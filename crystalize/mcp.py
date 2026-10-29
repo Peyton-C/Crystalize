@@ -437,6 +437,8 @@ class Server:
         self.bridge = bridge
         self.reader, self.writer = reader, writer
         self.player = Player(bridge)
+        self._log = store.SetLog()
+        self.player.on_send = self._log.sent
         self.client = None
         self._writing = threading.Lock()
         self._songs_lock = threading.Lock()
@@ -631,7 +633,7 @@ class Server:
         raw = self.bridge.call("set_state")
         self._seen = raw
         self._hold_keep_alive(raw)
-        return self._set_view(raw)
+        return self._record(raw, [])
 
     def _tool_await_event(self, args: dict) -> dict:
         seconds = args.get("seconds")
@@ -653,9 +655,23 @@ class Server:
             events = self._events(self._seen, raw, below)
             self._seen = raw
             self._hold_keep_alive(raw)
+            view = self._record(raw, events)
             if events or time.monotonic() >= deadline:
-                return {"events": events, "set": self._set_view(raw)}
+                return {"events": events, "set": view}
             time.sleep(AWAIT_POLL_SECONDS)
+
+    def _record(self, raw: dict, events: list) -> dict:
+        """The set as get_set shows it, written to the set's log: begun at the first read
+        of a set in play and ended with it."""
+        view = self._set_view(raw)
+        if not self._log.open and raw.get("goals") is not None and not view.get("ended"):
+            self._log.start()
+        for event in events:
+            self._log.read({"event": event})
+        self._log.read(view)
+        if any(e["event"] == "set_ended" for e in events):
+            self._log.end()
+        return view
 
     def _hold_keep_alive(self, raw: dict) -> None:
         """Hold the keep-alive off until the last active crowd request ends, so the agent
@@ -694,6 +710,7 @@ class Server:
                 events.append({"event": "request_ending", **entry})
 
         old_goals = (before or {}).get("goals") or []
+        missed = []
         titles = self._titles(after.get("goals") or [])
         for i, g in enumerate(after.get("goals") or []):
             old = old_goals[i] if i < len(old_goals) else None
@@ -706,6 +723,8 @@ class Server:
                 events.append({"event": "goal_done", "goal": text})
             elif ended and not done and old.get("active") is not False:
                 events.append({"event": "goal_ended", "goal": text})
+            if ended and not done:
+                missed.append(text)
 
         show, old_show = after.get("show") or {}, (before or {}).get("show") or {}
         if show.get("has_meter") is True and old_show.get("has_meter") is not True:
@@ -723,6 +742,8 @@ class Server:
             stars = (show.get("results") or {}).get("stars")
             if isinstance(stars, (int, float)):
                 event["stars"] = round(stars, 2)
+            if missed:
+                event["missed"] = missed
             events.append(event)
 
         keeping = self.player.keep_alive_status() or {}
@@ -779,11 +800,13 @@ class Server:
         if raw.get("goals") is not None:
             # A goal the show has used is up unless it is done; the mod's active mark is
             # null when it cannot read FUSER's map of active goals
-            goals, done = [], 0
+            goals, done, missed = [], 0, []
             titles = self._titles(raw["goals"])
             for g in raw["goals"]:
                 if g.get("completed") is True or g.get("active") is False:
                     done += g.get("completed") is True
+                    if g.get("completed") is not True:
+                        missed.append(self._goal_text(g, titles))
                     continue
                 entry = {"goal": self._goal_text(g, titles),
                          "done": g.get("performed"), "of": g.get("required")}
@@ -792,6 +815,8 @@ class Server:
                 goals.append({k: v for k, v in entry.items() if v is not None})
             result["goals"] = goals
             result["goals_done"] = done
+            if missed:
+                result["goals_missed"] = missed
 
         show = raw.get("show") or {}
         if show.get("has_meter") is not None:
@@ -814,6 +839,25 @@ class Server:
         low, high, value = fresh.get("min"), fresh.get("max"), fresh.get("value")
         if all(isinstance(v, (int, float)) for v in (low, high, value)) and high > low:
             result["freshness"] = round((value - low) / (high - low) * 100)
+            zone = fresh.get("zone")
+            if isinstance(zone, list) and all(isinstance(z, (int, float)) for z in zone):
+                result["freshness_zone"] = [round((z - low) / (high - low) * 100) for z in zone]
+        if isinstance(fresh.get("in_zone"), bool):
+            result["in_freshness_zone"] = fresh["in_zone"]
+        # What could keep actions from counting: the crowd calling it overactive, or the
+        # meter paused
+        actions, most = crowd.get("ActionCount"), crowd.get("OveractiveThreshold")
+        if isinstance(actions, int):
+            result["crowd_actions"] = actions
+            if crowd.get("OveractivityEnabled") is True and isinstance(most, int):
+                result["overactive"] = actions > most
+        for field, name in (("DrainPaused", "meter_paused"), ("FailurePending", "failure_pending")):
+            if crowd.get(field) is True:
+                result[name] = True
+        flow = {k: show[k] for k in ("started", "looping", "replaying_break", "has_goals")
+                if isinstance(show.get(k), bool)}
+        if flow:
+            result["show_state"] = flow
         if show.get("score") is not None:
             result["score"] = show["score"]
         results = show.get("results") or {}

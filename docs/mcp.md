@@ -127,12 +127,17 @@ Freshness, the mix's newness, rises when a disc is played, a mute changes or the
 | `requests_settled` | How many have passed and failed |
 | `goals` | Each goal not yet done, with how many times it has been `done` `of` the times it needs |
 | `goals_done` | How many are done |
+| `goals_missed` | Each goal that ended undone |
 | `crowd_meter_on` | Whether this part of the set has a crowd meter. The early ones do not |
 | `crowd_meter` | From 0 to 100, starting at 50. The set fails at 0 unless No Fail is on |
 | `crowd` | The meter's band: low, medium, high or peak |
 | `crowd_warnings` | Warnings the crowd has given, such as for changing too much at once |
 | `crowd_band_bonus` | The points a section ends on for each band, which differ between sets |
 | `freshness` | From 0 to 100, how new the mix sounds. A drop raises it and it fades while nothing changes |
+| `freshness_zone`, `in_freshness_zone` | The range of freshness the set pays for staying in, and whether it is there. Above it, freshness bonuses shrink |
+| `crowd_actions`, `overactive` | The actions the crowd counts in its last 6 bars, and whether that is more than it allows |
+| `meter_paused`, `failure_pending` | Present when the meter has stopped draining or is about to fail the set |
+| `show_state` | Whether the show has started, the section is looping, a show break is replaying and the section has goals |
 | `score` | The set's score so far |
 | `stars` | Stars earned so far, out of 5 |
 | `points` | Where the score came from: requests, request combos, goals, perfect, early, late and bad timing, and the crowd meter |
@@ -156,7 +161,7 @@ A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, suc
 | `goal_ended` | A goal stopped before it was done |
 | `meter_on` | The crowd meter comes on |
 | `meter_low` | The meter falls below `meter_below`, 30 by default, said once on the way down |
-| `set_ended` | FUSER counts the set out, or it can no longer be read, with the stars earned |
+| `set_ended` | FUSER counts the set out, or it can no longer be read, with the stars earned and the goals that ended undone |
 | `keep_alive_stopped` | `keep_alive` gave up, with why |
 
 ## Tempo range
@@ -164,6 +169,9 @@ FUSER allows 90 to 157 BPM. FuserSongLoader builds from May 2026 on widen it to 
 
 ## Saved mixes
 `save_mix` refuses a plan `plan_mix` would refuse, and keeps the rest in `~/.local/share/crystalize/mixes/`, stamped with the time and the MCP client's name. Saving under a name again replaces the mix.
+
+## Set log
+Crystalize keeps a record of each campaign set in `~/.local/share/crystalize/sets/`, one file a set named for when it began, one JSON object a line. It holds `get_set`'s view whenever it changed and every event, each command sent to FUSER, and the time of each. It begins at the first read of a set in play and ends at `set_ended`, so a run that lost points can be gone over measure by measure.
 
 ## Log
 Crystalize writes a line to stderr for every call: the tool, the size of its reply in bytes and how long it took. A reply stays in the agent's context for the rest of the session, so this is where to look when a session costs more than expected.

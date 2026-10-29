@@ -1,11 +1,13 @@
-"""What Crystalize keeps between sessions: tags, saved mixes, and the last library FUSER
-reported, so a mix can be planned while the game is closed."""
+"""What Crystalize keeps between sessions: tags, saved mixes, the last library FUSER
+reported, so a mix can be planned while the game is closed, and a record of each campaign
+set played."""
 from __future__ import annotations
 
 import json
 import os
 import re
 import tempfile
+import threading
 import time
 
 TAG_FIELDS = ("energy", "style", "lyrics", "mood_clash")
@@ -99,3 +101,54 @@ def list_mixes() -> list[dict]:
             out.append({"name": mix.get("name", file[:-5]), "saved": mix.get("saved"),
                         "steps": len(mix.get("steps", []))})
     return out
+
+
+# ------------------------------------------------------------------------- sets
+
+class SetLog:
+    """A campaign set's record, one JSON object a line in sets/: the set as get_set shows
+    it whenever it changed, and every command sent, each with when. A run that lost points
+    can be gone over after, measure by measure."""
+
+    def __init__(self):
+        self._file = None
+        self._last = None
+        self._lock = threading.Lock()
+        self.path: str | None = None
+
+    @property
+    def open(self) -> bool:
+        return self._file is not None
+
+    def start(self) -> None:
+        with self._lock:
+            if self._file:
+                return
+            folder = os.path.join(data_dir(), "sets")
+            os.makedirs(folder, exist_ok=True)
+            self.path = os.path.join(folder, time.strftime("%Y-%m-%d-%H%M%S") + ".jsonl")
+            self._file = open(self.path, "a", encoding="utf-8")
+            self._last = None
+
+    def read(self, view: dict) -> None:
+        # The measure moves on every read, so a read goes in only when more than it changed
+        rest = {k: v for k, v in view.items() if k != "measure"}
+        with self._lock:
+            if self._file and rest != self._last:
+                self._last = rest
+                self._line({"set": view})
+
+    def sent(self, commands) -> None:
+        with self._lock:
+            if self._file:
+                self._line({"sent": [[op, args] for op, args in commands]})
+
+    def end(self) -> None:
+        with self._lock:
+            if self._file:
+                self._file.close()
+                self._file = None
+
+    def _line(self, entry: dict) -> None:
+        self._file.write(json.dumps({"t": round(time.time(), 3), **entry}, ensure_ascii=False) + "\n")
+        self._file.flush()
