@@ -25,7 +25,13 @@ Add the server to an MCP client:
 claude mcp add crystalize -- uv run --directory /path/to/Crystalize crystalize mcp
 ```
 
-See [MCP server](docs/mcp.md) for the tools, and [Bridge](docs/bridge.md) for how the server reaches the game.
+To go straight to a campaign set or freestyle without the menus, starting FUSER if it is closed:
+
+```sh
+uv run crystalize launch --set 3.1
+```
+
+See [MCP server](docs/mcp.md) for the tools and `launch`, and [Bridge](docs/bridge.md) for how the server reaches the game.
 
 ## Clawd
 Optionally, Crystalize puts Clawd, in headphones, in place of your avatar:

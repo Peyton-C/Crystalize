@@ -124,7 +124,7 @@ def test_initialize_and_list(talk):
 
 def test_every_tool_has_a_handler():
     server = mcp.Server(FakeBridge(), None, None)
-    for tool in mcp.TOOLS:
+    for tool in mcp.TOOLS + mcp.DEBUG_TOOLS:
         assert callable(getattr(server, f"_tool_{tool['name']}"))
 
 
@@ -697,3 +697,30 @@ def test_a_set_is_logged_from_its_first_read_to_its_end(fake, monkeypatch, tmp_p
     assert lines[0]["set"]["measure"] == 84
     assert lines[1]["sent"] == [["drop", {"name": "a", "deck": 2, "queue": False}]]
     assert {"event": "set_ended"} in [l["set"].get("event") for l in lines if "set" in l]
+
+
+def test_debug_tools_only_with_debug(fake):
+    def talk(debug, *requests):
+        lines = "".join(json.dumps({"jsonrpc": "2.0", **r}) + "\n" for r in requests)
+        writer = io.BytesIO()
+        mcp.Server(fake, io.BytesIO(lines.encode()), writer, debug=debug).run()
+        return [json.loads(line) for line in writer.getvalue().decode().splitlines()]
+
+    lua = {"id": 2, "method": "tools/call",
+           "params": {"name": "debug_lua", "arguments": {"code": "return 1"}}}
+    tools, refused = talk(False, {"id": 1, "method": "tools/list"}, lua)
+    assert "debug_lua" not in [t["name"] for t in tools["result"]["tools"]]
+    assert "unknown tool" in refused["error"]["message"] and fake.calls == []
+
+    tools, ran = talk(True, {"id": 1, "method": "tools/list"}, lua)
+    assert {"debug_read", "debug_lua"} <= {t["name"] for t in tools["result"]["tools"]}
+    assert not ran["result"]["isError"] and fake.calls == [("lua", {"code": "return 1"})]
+
+
+def test_go_to_stops_what_plays_and_forgets_the_set(fake, monkeypatch):
+    server = mcp.Server(fake, None, None)
+    server._seen = {"measure": 3}
+    went = []
+    monkeypatch.setattr(mcp.launch, "go_to", lambda bridge, *a, **k: went.append(a) or {"at": "menu"})
+    assert server._tool_go_to({"where": "menu"}) == {"at": "menu"}
+    assert went == [("menu", None, None)] and server._seen is None

@@ -45,6 +45,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `play_mix` | Plays a plan or a saved mix, each step on its bar |
 | `stop_mix` | Stops the mix. The decks keep playing what they have |
 | `keep_alive` | Swaps discs from a list now and then, so a campaign set's crowd meter does not drain while the agent thinks |
+| `go_to` | Takes FUSER to a campaign set, freestyle or the main menu without its menus, see Launching |
 | `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck`, `take_snapshot` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar. A snapshot is kept in the player's profile, as one taken with the key is. A disc dropped on a deck Crystalize muted unmutes it on the same downbeat, since FUSER rewards nothing dropped on a muted deck |
 
 A call with an argument its tool does not take is refused, and the error lists the arguments it does take.
@@ -164,6 +165,18 @@ A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, suc
 | `set_ended` | FUSER counts the set out, or it can no longer be read, with the stars earned and the goals that ended undone |
 | `keep_alive_stopped` | `keep_alive` gave up, with why |
 
+## Launching
+`go_to` and `crystalize launch` take FUSER where it is sent without its menus: from the intro, the main menu, or inside a set, which starts it over. Crystalize signs in first if FUSER has just started, since that is what loads the save, then loads the venue and walks the set into play, past the promoter's intro. A set is its venue, 1 to 6, and its number there as the game lists them, and `crystalize launch --list` lists them all. Its crate gets the discs the set gives, as the loadout screen would.
+
+Nothing checks that a set is unlocked, and finishing one saves the result like any other, so back up `FuserSave` in Steam's `userdata` folder for FUSER before playing ahead. A set reached this way ends on a rewards screen that never moves on. The result is saved by then, and `go_to` menu or the next set leaves it.
+
+```sh
+uv run crystalize launch --set 3.1
+uv run crystalize launch --freestyle --restart
+```
+
+`--restart` installs the mod, closes FUSER and starts it again through Steam, for trying a change to the mod. `launch` talks to the game with a bridge of its own, so run it while the MCP server is idle.
+
 ## Tempo range
 FUSER allows 90 to 157 BPM. FuserSongLoader builds from May 2026 on widen it to 60 to 200. Crystalize reads the range from the game, so plans are checked against whichever you have.
 
@@ -172,6 +185,20 @@ FUSER allows 90 to 157 BPM. FuserSongLoader builds from May 2026 on widen it to 
 
 ## Set log
 Crystalize keeps a record of each campaign set in `~/.local/share/crystalize/sets/`, one file a set named for when it began, one JSON object a line. It holds `get_set`'s view whenever it changed and every event, each command sent to FUSER, and the time of each. It begins at the first read of a set in play and ends at `set_ended`, so a run that lost points can be gone over measure by measure.
+
+## Debugging
+`crystalize mcp --debug` adds two tools for trying FUSER's functions without a mod change and a restart for each guess. Leave it off otherwise: `debug_lua` can call anything in the game, including what crashes it.
+
+| Tool | What |
+| --- | --- |
+| `debug_read` | Named fields of the first object of a class, or of every one with `all`, without calling anything |
+| `debug_lua` | Runs Lua on FUSER's game thread with UE4SS's globals and the mod's helpers, and returns what it returns and prints |
+
+Run only one server against the game at a time, so switch the flag on the one you have rather than adding a second:
+
+```sh
+claude mcp add crystalize -- uv run --directory /path/to/Crystalize crystalize mcp --debug
+```
 
 ## Log
 Crystalize writes a line to stderr for every call: the tool, the size of its reply in bytes and how long it took. A reply stays in the agent's context for the rest of the session, so this is where to look when a session costs more than expected.

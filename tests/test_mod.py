@@ -208,6 +208,77 @@ def test_read_all(ask):
         (30, False), (62, True)]
 
 
+def test_lua_returns_what_it_returns_and_prints(ask):
+    body, _ = ask("lua", code="print('bpm', 120) "
+                              "return {meter = first('BP_Crowd_Manager_C').CurrentCrowdMeterState, "
+                              "songs = first('ShowPrompt').FeaturedSongs, list = {1, 2}}")
+    assert body["result"] == {"printed": ["bpm\t120"], "result": {
+        "meter": 1, "songs": ["CelSongSet /Game/Audio/Songs/rockthecasbah"], "list": [1, 2]}}
+
+
+def test_lua_keeps_null_inside_a_table(ask):
+    body, _ = ask("lua", code="return {prompt = readable(nil)}")
+    assert body["result"]["result"] == {"prompt": None}
+
+
+def test_lua_error_is_reported(ask):
+    body, _ = ask("lua", code="error('no such thing', 0)")
+    assert not body["ok"] and body["error"] == "no such thing"
+    body, _ = ask("lua", code="return (")
+    assert not body["ok"] and "lua" in body["error"]
+
+
+def test_flow(ask):
+    body, calls = ask("flow")
+    assert body["result"] == {"screen": 3, "title": 9, "mode": 1, "flow": 3, "flow_object":
+        "ShowFlowMgr /Game/Maps/Venue02/Venue02.Venue02:PersistentLevel.HypeGameStateShow_7.ShowFlowMgr"}
+    assert calls == []
+
+
+def test_sets_skips_a_null_prompt(ask):
+    body, _ = ask("sets", venues=[0, 1])
+    assert body["result"] == [[{"id": "M_0010", "name": "SET {Num}: Opener"}, None],
+                              [{"id": "M_0161", "name": "SET {Num}: Mute Point"}]]
+
+
+def test_load_set(ask):
+    body, calls = ask("load_set", venue=0, set=0)
+    assert body["result"]["set"].endswith("M_0010.M_0010")
+    assert [(c["object"], c["method"], c["args"]) for c in calls] == [
+        ("LevelLoadConfig", "ConfigureShow", ["M_0010"]),
+        # The set's own discs, which its skipped loadout screen would have added
+        ("CrateMgr", "ApplyCrateFilter", ["M_0010"]),
+        ("VenueMgr", "SetCurrentVenueData", ["VenueA", False]),
+        ("VenueMgr", "LoadCurrentVenueMap", ["LevelLoadConfig", True]),
+    ]
+
+
+def test_load_set_refuses_a_null_prompt_before_touching_the_game(ask):
+    body, calls = ask("load_set", venue=0, set=1)
+    assert not body["ok"] and "no set 1" in body["error"] and calls == []
+
+
+def test_load_freestyle_in_the_last_venue(ask):
+    _, calls = ask("load_freestyle")
+    assert [(c["method"], c["args"]) for c in calls] == [
+        ("ConfigureFreestyle", []), ("SetCurrentVenueData", ["VenueB", True]),
+        ("LoadCurrentVenueMap", ["LevelLoadConfig", True])]
+
+
+def test_begin_loads_the_gameplay_screen_then_walks_the_flow(ask):
+    _, calls = ask("begin", states=[1, 2])
+    assert [(c["object"], c["method"], c["args"][:2]) for c in calls] == [
+        ("ShellFlowMgr", "LoadShellScreen", [10, False]),
+        ("ShowFlowMgr", "GoToState", [1, {}]), ("ShowFlowMgr", "GoToState", [2, {}])]
+
+
+def test_sign_in_and_main_menu(ask):
+    _, calls = ask("sign_in")
+    assert [(c["object"], c["method"]) for c in calls] == [("TitleScreen", "StartLoginFlow")]
+    _, calls = ask("main_menu")
+    assert [(c["method"], c["args"]) for c in calls] == [("GoBackToScreen", [3, True])]
+
+
 def test_set_state_without_a_live_meter(ask):
     body, _ = ask("set_state", missing="WBP_ShowsCrowdMeter_C")
     state = body["result"]

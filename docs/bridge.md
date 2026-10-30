@@ -24,7 +24,15 @@ The mod's commands are thin wrappers over FUSER's own functions. The server turn
 | `mute`, `solo` | `AudioController.NetMuteTrack`, `NetSoloTrack` |
 | `snapshot` | `SavedMomentsMgr.SaveCurrentMoment`, what the Take Snapshot key does |
 | `set_state` | `RequestMgr._requests` for crowd requests, `ShowGoalsMgr` for goals, `SkillStat_Freshness` for freshness, the crowd meter from its widget, `WBP_ShowsCrowdMeter_C`, and `ShowFlowMgr` for the score, the stars and whether the set is ending. Each part is read on its own, and the ones that fail are listed |
+| `flow` | `ShellFlowMgr.GetCurrentScreen`, the title screen's sign-in state, `LevelLoadConfig._gameMode`, and the session's `ShowFlowMgr` or `FreestyleFlowMgr` state |
+| `sets` | Each venue's `MissionPrompts` from `VenueMgr.Venues` |
+| `sign_in` | `HypeTitleScreen.StartLoginFlow`, what a key on the title screen does |
+| `load_set` | `LevelLoadConfig.ConfigureShow`, `CrateMgr.ApplyCrateFilter`, then `VenueMgr.SetCurrentVenueData` and `LoadCurrentVenueMap` |
+| `load_freestyle` | `LevelLoadConfig.ConfigureFreestyle`, then the venue as for a set |
+| `begin` | `ShellFlowMgr.LoadShellScreen` for the gameplay screen, then the flow manager's `GoToState` for each state given |
+| `main_menu` | `ShellFlowMgr.GoBackToScreen`, reloading the menu's map |
 | `read` | Named fields of the first object of a class, or of every one with `all`, read without calling anything, to look for where FUSER keeps something. Arrays come back as lists |
+| `lua` | Runs a chunk of Lua on the game thread with UE4SS's globals and returns what it returns and prints. The server sends it only with `--debug` |
 | `batch` | Several of the above in order, on one frame. A bar's steps go as one, so they all reach FUSER within the window that counts as on the downbeat |
 
 The `Net` functions are FUSER's multiplayer calls. In freestyle and the campaign the player is the host, so they run locally.

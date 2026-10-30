@@ -341,6 +341,139 @@ function ops.snapshot()
     return {}
 end
 
+------------------------------------------------------------------------------- launching
+
+-- What FUSER's menus do between the title screen and a set, done without them. Each op is
+-- one step; the order, and the waiting between them while a map loads, is launch.py's.
+
+-- EShellScreenType
+local SCREEN_MAIN_MENU, SCREEN_GAMEPLAY = 3, 10
+-- EHypeGameMode
+local MODE_SHOW = 1
+
+local function venueAt(index)
+    local venue = items(first("VenueMgr").Venues)[index + 1]
+    if not valid(venue) then
+        error("no venue " .. tostring(index), 0)
+    end
+    return venue
+end
+
+-- Each prompt is checked before it is touched: UE4SS reads through a null object without
+-- a check, FUSER crashes past pcall, and a listing of every venue's sets did just that
+local function promptAt(venue, index)
+    local prompt = items(venue.MissionPrompts)[index + 1]
+    if not valid(prompt) then
+        error("no set " .. tostring(index) .. " in that venue", 0)
+    end
+    return prompt
+end
+
+-- The session's flow manager. The menu's backdrop map has a freestyle one of its own, so
+-- the class comes from the mode the last load was configured for
+local function flowMgr(mode)
+    local f = FindFirstOf(mode == MODE_SHOW and "ShowFlowMgr" or "FreestyleFlowMgr")
+    return valid(f) and f or nil
+end
+
+-- Where FUSER is: the screen (EShellScreenType), the title screen's sign-in
+-- (ETitleScreenState), the mode a load was configured for (EHypeGameMode), and the
+-- session's flow (EGameFlowState) with the manager's full name, which changes when a map
+-- loads. Read while a map loads, so each part is null if it cannot be read yet.
+function ops.flow()
+    local out = { screen = NULL, title = NULL, mode = NULL, flow = NULL, flow_object = NULL }
+    local shell = FindFirstOf("ShellFlowMgr")
+    if valid(shell) then
+        out.screen = shell:GetCurrentScreen()
+    end
+    local title = FindFirstOf("HypeTitleScreen")
+    if valid(title) then
+        out.title = title:GetTitleScreenState()
+    end
+    local cfg = FindFirstOf("LevelLoadConfig")
+    if valid(cfg) then
+        out.mode = cfg._gameMode
+    end
+    local f = flowMgr(out.mode)
+    if f then
+        out.flow = f.CurrentState
+        out.flow_object = f:GetFullName()
+    end
+    return out
+end
+
+-- The sets of each venue asked for, by index from 0, in the order the game lists them
+function ops.sets(args)
+    local out = array()
+    for i, index in ipairs(args.venues or {}) do
+        local venue = venueAt(index)
+        local sets = array()
+        for j, prompt in ipairs(items(venue.MissionPrompts)) do
+            sets[j] = valid(prompt) and {
+                id = prompt:GetFullName():match("([^.]+)$"),
+                name = text(prompt.MissionName),
+            } or NULL
+        end
+        out[i] = sets
+    end
+    return out
+end
+
+-- What a key press on the title screen does: signs in and loads the save. The intro
+-- cinematic can still be playing
+function ops.sign_in()
+    first("HypeTitleScreen"):StartLoginFlow()
+    return {}
+end
+
+-- Loads a campaign set's venue, configured for that set, with the discs the set gives,
+-- which the skipped loadout screen would have added. Unlocked or not: nothing checks
+function ops.load_set(args)
+    local venue = venueAt(args.venue)
+    local prompt = promptAt(venue, args.set)
+    local cfg, mgr = first("LevelLoadConfig"), first("VenueMgr")
+    cfg:ConfigureShow(prompt)
+    first("CrateMgr"):ApplyCrateFilter(prompt)
+    mgr:SetCurrentVenueData(venue, false)
+    mgr:LoadCurrentVenueMap(cfg, true)
+    return { venue = venue:GetFullName(), set = prompt:GetFullName() }
+end
+
+-- Loads freestyle, in a venue by index or the last one played
+function ops.load_freestyle(args)
+    local cfg, mgr = first("LevelLoadConfig"), first("VenueMgr")
+    local venue = args.venue and venueAt(args.venue) or mgr:GetLastFreestyleVenueData()
+    if not valid(venue) then
+        error("no freestyle venue played yet, give one", 0)
+    end
+    cfg:ConfigureFreestyle()
+    mgr:SetCurrentVenueData(venue, true)
+    mgr:LoadCurrentVenueMap(cfg, true)
+    return { venue = venue:GetFullName() }
+end
+
+-- Starts a loaded session: the gameplay screen, which the map load leaves unset, then
+-- each flow state in turn. A show stops in Intro without the second
+function ops.begin(args)
+    local cfg = first("LevelLoadConfig")
+    local f = flowMgr(cfg._gameMode)
+    if not f then
+        error("nothing loaded to start", 0)
+    end
+    first("ShellFlowMgr"):LoadShellScreen(SCREEN_GAMEPLAY, false, false)
+    for _, state in ipairs(args.states or {}) do
+        f:GoToState(state, {}, false)
+    end
+    return { flow = f.CurrentState }
+end
+
+-- Back to the main menu, reloading its map. A set started this way ends on a rewards
+-- screen that waits for a desk outro the skipped steps never play, and this leaves it
+function ops.main_menu()
+    first("ShellFlowMgr"):GoBackToScreen(SCREEN_MAIN_MENU, true)
+    return {}
+end
+
 local function shortNames(arr, field)
     local out = array()
     for _, obj in ipairs(items(arr)) do
@@ -637,40 +770,49 @@ local function readable(v)
     return named and plain(s) or NULL
 end
 
+-- A value as a response can carry it: a TMap as pairs, a TArray as a list, a Lua table
+-- field by field, and anything else as readable gives it
+local function describe(v)
+    if plain(v) ~= NULL or v == nil or v == NULL then
+        return plain(v)
+    end
+    -- A TMap, whose ForEach hands the key wrapped as it does the value, as pairs, so a map
+    -- keyed by an enum says which entry is which
+    local mapped, map = pcall(function()
+        local pairs_ = array()
+        v:ForEach(function(key, value)
+            pairs_[#pairs_ + 1] = array({ readable(key:get()), readable(value:get()) })
+        end)
+        return pairs_
+    end)
+    if mapped then
+        return map
+    end
+    -- A TArray, item by item: a featured song is one of these
+    local listed, list = pcall(items, v)
+    if listed then
+        local named = array()
+        for i, item in ipairs(list) do
+            named[i] = readable(item)
+        end
+        return named
+    end
+    -- A Lua table the debug op's code made, not a game object, which has IsValid
+    if type(v) == "table" and v.IsValid == nil then
+        local out = #v > 0 and array() or {}
+        for k, item in pairs(v) do
+            out[k] = describe(item)
+        end
+        return out
+    end
+    return readable(v)
+end
+
 local function readFields(obj, fields)
     local out = {}
     for _, field in ipairs(fields or {}) do
         local ok, v = pcall(function() return obj[field] end)
-        local listed, list = false, nil
-        local mapped, map = false, nil
-        if ok and plain(v) == NULL then
-            -- A TMap, whose ForEach hands the key wrapped as it does the value, as pairs, so
-            -- a map keyed by an enum says which entry is which
-            mapped, map = pcall(function()
-                local pairs_ = array()
-                v:ForEach(function(key, value)
-                    pairs_[#pairs_ + 1] = array({ readable(key:get()), readable(value:get()) })
-                end)
-                return pairs_
-            end)
-            if not mapped then
-                -- A TArray, item by item: a featured song is one of these
-                listed, list = pcall(items, v)
-            end
-        end
-        if not ok then
-            out[field] = NULL
-        elseif mapped then
-            out[field] = map
-        elseif listed then
-            local named = array()
-            for i, item in ipairs(list) do
-                named[i] = readable(item)
-            end
-            out[field] = named
-        else
-            out[field] = readable(v)
-        end
+        out[field] = ok and describe(v) or NULL
     end
     return out
 end
@@ -692,6 +834,29 @@ function ops.read(args)
         end
     end
     return out
+end
+
+-- Lua run on the game thread, with UE4SS's globals and the mod's helpers, for trying a
+-- FUSER function before it gets a command of its own: a change to the mod costs a FUSER
+-- restart, and this costs none. The server offers it only when started with --debug.
+-- What the code returns comes back as describe gives it, with anything it printed.
+function ops.lua(args)
+    local printed = array()
+    local env = setmetatable({
+        valid = valid, first = first, items = items, readable = readable, describe = describe,
+        print = function(...)
+            local parts = {}
+            for i = 1, select("#", ...) do
+                parts[i] = tostring((select(i, ...)))
+            end
+            printed[#printed + 1] = table.concat(parts, "\t")
+        end,
+    }, { __index = _G })
+    local chunk, err = load(args.code or "", "lua", "t", env)
+    if not chunk then
+        error(err, 0)
+    end
+    return { result = describe(chunk()), printed = printed }
 end
 
 -- Several commands in one request, run in order on one frame. A bar's drops have to reach

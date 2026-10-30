@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 
-from . import __version__, music, store
+from . import __version__, launch, music, store
 from .bridge import GameError
 from .mixes import Plan
 from .player import REMEMBERED_DISCS as REMEMBERED, Player
@@ -52,6 +52,9 @@ POINTS = {"requests": "RequestPoints", "request_combos": "RequestComboBonusPoint
 # Discs keep_alive picks for each deck it is asked to fill. Two decks of 8 make 64 mixes,
 # more than a set has bars, and more than 8 reaches into songs that fit the session worse
 FILL_DISCS = 8
+# How long go_to waits for FUSER to sign in, under what MCP clients wait for a tool, as
+# AWAIT_MAX_SECONDS is. Signing in carries on in the game, so a second go_to picks it up
+GO_TO_SIGN_IN_SECONDS = 45
 # The meter level await_event warns below unless told otherwise. It drains a point a
 # second once idle, so this is half a minute from failing the set
 METER_LOW = 30
@@ -328,6 +331,54 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {"deck": DECK, "solo": {"type": "boolean"}},
                         "required": ["deck", "solo"]},
     },
+    {
+        "name": "go_to",
+        "description": "Take FUSER to a campaign set, freestyle or the main menu without its "
+                       "menus, from its intro, the menu, or inside a set, which starts the set "
+                       "over. A set is its venue, 1 to 6, and its number there as the game "
+                       "lists them; locked or not, and finishing one saves the result. Signs in "
+                       "first if FUSER has just started. Stops play_mix and keep_alive. A set "
+                       "reached this way ends on a rewards screen that never moves on, and "
+                       "go_to menu, or the next set, leaves it with the result already saved.",
+        "inputSchema": {"type": "object", "properties": {
+            "where": {"type": "string", "enum": ["set", "freestyle", "menu"]},
+            "venue": {"type": "integer", "minimum": 1, "maximum": launch.VENUES,
+                      "description": "For a set, and for freestyle, else the last venue played"},
+            "set": {"type": "integer", "minimum": 1},
+        }, "required": ["where"]},
+    },
+]
+
+# For trying FUSER's functions without a mod change and a restart for each guess. Offered
+# only with --debug: debug_lua can call anything in the game, including what crashes it
+DEBUG_TOOLS = [
+    {
+        "name": "debug_read",
+        "description": "Read named fields of the first object of a UE4SS class, such as "
+                       "LevelLoadConfig, or of every one with `all`, each with its full name, "
+                       "since the first can be a stale template. Calls nothing. Objects and "
+                       "text come back by name, arrays as lists, maps as pairs, structs as "
+                       "null.",
+        "inputSchema": {"type": "object", "properties": {
+            "class": {"type": "string"},
+            "fields": {"type": "array", "items": {"type": "string"}},
+            "all": {"type": "boolean"},
+        }, "required": ["class", "fields"]},
+    },
+    {
+        "name": "debug_lua",
+        "description": "Run Lua in FUSER's game thread, with UE4SS's globals (FindFirstOf, "
+                       "FindAllOf, StaticFindObject, FName) and the mod's helpers valid(obj), "
+                       "first(class), items(tarray), readable(v) and describe(v). Returns what "
+                       "the code returns and what it printed. The game waits while it runs, "
+                       "and a wrong call can crash FUSER: no RegisterHook or NotifyOnNewObject, "
+                       "and check valid(obj) before touching any object from a field or array, "
+                       "since UE4SS reads through a null one and FUSER crashes, past pcall.",
+        "inputSchema": {"type": "object", "properties": {
+            "code": {"type": "string",
+                     "description": "A chunk, e.g. return FindFirstOf('HypeAudio'):GetCurrentBPM()"},
+        }, "required": ["code"]},
+    },
 ]
 
 # The craft a plan's checks cannot catch, given once when the agent asks for the workflow
@@ -433,9 +484,10 @@ PROMPTS = [
 
 
 class Server:
-    def __init__(self, bridge, reader, writer):
+    def __init__(self, bridge, reader, writer, debug: bool = False):
         self.bridge = bridge
         self.reader, self.writer = reader, writer
+        self.tools = TOOLS + DEBUG_TOOLS if debug else TOOLS
         self.player = Player(bridge)
         self._log = store.SetLog()
         self.player.on_send = self._log.sent
@@ -500,7 +552,7 @@ class Server:
         elif method == "ping":
             result = {}
         elif method == "tools/list":
-            result = {"tools": TOOLS}
+            result = {"tools": self.tools}
         elif method == "prompts/list":
             result = {"prompts": [
                 {"name": p["name"], "description": p["description"],
@@ -533,7 +585,7 @@ class Server:
     def _call(self, id_, params: dict) -> None:
         name, started = params.get("name"), time.monotonic()
         tool = getattr(self, f"_tool_{name}", None) if isinstance(name, str) else None
-        schema = next((t["inputSchema"] for t in TOOLS if t["name"] == name), None)
+        schema = next((t["inputSchema"] for t in self.tools if t["name"] == name), None)
         if tool is None or schema is None:
             self._send({"jsonrpc": "2.0", "id": id_,
                         "error": {"code": -32602, "message": f"unknown tool {name}"}})
@@ -1124,6 +1176,25 @@ class Server:
     def _tool_mute_deck(self, args: dict) -> dict:
         self.player.on_downbeat([("mute", {"deck": _deck(args), "on": bool(args["mute"])})])
         return {"deck": args["deck"], "muted": bool(args["mute"])}
+
+    def _tool_go_to(self, args: dict) -> dict:
+        # Nothing may drop on a deck while the map under it is replaced, and the set being
+        # left is over, so its log and what the agent last saw of it go too
+        self.player.stop()
+        self.player.stop_keep_alive()
+        self._log.end()
+        self._seen, self._warned = None, set()
+        try:
+            return launch.go_to(self.bridge, args["where"], args.get("venue"), args.get("set"),
+                                sign_in_seconds=GO_TO_SIGN_IN_SECONDS)
+        except launch.LaunchError as e:
+            raise GameError(str(e)) from None
+
+    def _tool_debug_read(self, args: dict) -> dict:
+        return self.bridge.call("read", **args)
+
+    def _tool_debug_lua(self, args: dict) -> dict:
+        return self.bridge.call("lua", code=args["code"])
 
     def _tool_solo_deck(self, args: dict) -> dict:
         self.player.on_downbeat([("solo", {"deck": _deck(args), "on": bool(args["solo"])})])

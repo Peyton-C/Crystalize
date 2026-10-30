@@ -125,6 +125,21 @@ local synthRequest = object("SynthRequest", {
                          songs = tarrayOf({}), Cels = tarrayOf({}) },
 })
 
+-- The campaign as VenueMgr holds it: venues, each with its sets in the game's order. The
+-- first venue's second set is null, as one of FUSER's test venues may have
+local function prompt(id, title)
+    return object(id, { MissionName = name(title), GetFullName = function()
+        return "ShowPrompt /Game/Gameplay/CampaignMissions/" .. id .. "." .. id
+    end })
+end
+local function venue(id, prompts)
+    return object(id, { MissionPrompts = tarrayOf(prompts), GetFullName = function()
+        return "VenueData /Game/Gameplay/Venues/" .. id .. "." .. id
+    end })
+end
+local venueA = venue("VenueA", { prompt("M_0010", "SET {Num}: Opener"), INVALID })
+local venueB = venue("VenueB", { prompt("M_0161", "SET {Num}: Mute Point") })
+
 local world = {
     BP_Deck_C = {
         object("Deck0", { track = 0, CurPlayingDisc = disc("callmemaybebt"), CurQueuedDisc = INVALID }),
@@ -163,6 +178,10 @@ local world = {
     }) },
     -- The set features two songs, and the open goal's config points at the second
     ShowFlowMgr = { object("ShowFlowMgr", { GetScore = function() return 1500 end,
+        CurrentState = 3,
+        GetFullName = function()
+            return "ShowFlowMgr /Game/Maps/Venue02/Venue02.Venue02:PersistentLevel.HypeGameStateShow_7.ShowFlowMgr"
+        end,
         GetCurrentShowSectionIndex = function() return 1 end,
         HasShowEndCountdownBeenBroadcast = function() return false end,
         GetScoringResults = function() return { StarsEarned = 2.5, FailedShow = false,
@@ -205,6 +224,12 @@ local world = {
                 return "WBP_ShowsCrowdMeter_C /Engine/Transient.GameEngine_1:WBP_Hud.WidgetTree_0.CrowdMeter"
             end }),
     },
+    ShellFlowMgr = { object("ShellFlowMgr", { GetCurrentScreen = function() return 3 end }) },
+    HypeTitleScreen = { object("TitleScreen", { GetTitleScreenState = function() return 9 end }) },
+    LevelLoadConfig = { object("LevelLoadConfig", { _gameMode = 1 }) },
+    VenueMgr = { object("VenueMgr", { Venues = tarrayOf({ venueA, venueB }),
+        GetLastFreestyleVenueData = function() return venueB end }) },
+    CrateMgr = { object("CrateMgr") },
     DeskState = { object("DeskState") },
     AudioController = { object("AudioController") },
     SavedMomentsMgr = { object("SavedMomentsMgr") },
