@@ -211,9 +211,10 @@ def request_wants(f: dict | None, titles: dict | None = None) -> str | None:
 
 
 def goal_text(name: str | None, song: str | None = None,
-              filters: list[dict] | None = None) -> str | None:
+              filters: list[dict] | None = None, instrument: str | None = None) -> str | None:
     """A goal's name with the placeholders filled that can be, `song` being the title of
-    the song it features and `filters` the FCelFilters it counts discs by."""
+    the song it features, `filters` the FCelFilters it counts discs by and `instrument`
+    the title of the instrument it features."""
     if not name:
         return name
     # "Include only 1 {btType}" means one disc in all, a beat, not one beat among others,
@@ -233,4 +234,6 @@ def goal_text(name: str | None, song: str | None = None,
         lambda m: f"{m[2].lower()} {DISC_TYPE_WORDS[m[1]]}", name)
     if song:
         name = name.replace("{RequiredSong}", song)
+    if instrument:
+        name = name.replace("{CustomInstrument}", instrument)
     return name

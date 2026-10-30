@@ -114,6 +114,40 @@ def test_simple_ops(ask, op, args, method, expected):
     assert [(c["method"], c["args"]) for c in calls] == [(method, expected)]
 
 
+def test_instruments_leave_out_the_placeholder(ask):
+    body, _ = ask("instruments")
+    assert body["result"] == [{"name": "DrumCanvas2", "title": "Electro Funk Drums"},
+                              {"name": "Banjo", "title": "Banjo"}]
+
+
+def test_perform_begin_loads_the_instrument_into_a_slot(ask):
+    body, calls = ask("perform_begin", slot=0, name="Banjo")
+    assert body["result"] == {"slot": 0, "crafting": True, "ready": True}
+    assert calls == [{"object": "InstrumentCraftingState", "method": "NetBeginCrafting",
+                      "args": [0, "Banjo"]}]
+
+
+def test_perform_begin_unknown_instrument(ask):
+    body, calls = ask("perform_begin", slot=0, name="Theremin")
+    assert not body["ok"] and "no instrument named Theremin" in body["error"]
+    assert calls == []
+
+
+def test_perform_press_solos_the_pad(ask):
+    body, calls = ask("perform_press", slot=0, x=2, y=3, on=True)
+    assert body["ok"]
+    assert calls == [{"object": "InstrumentCraftingState", "method": "NetSetGridCraftingState",
+                      "args": [0, {"PrimaryActionOn": True, "SecondaryActionOn": False,
+                                   "GridPos": {"X": 2, "Y": 3}, "mode": 1}]}]
+
+
+def test_perform_end_and_a_bad_slot(ask):
+    body, calls = ask("perform_end", slot=0)
+    assert body["ok"] and [c["method"] for c in calls] == ["NetEndCrafting"]
+    body, calls = ask("perform_end", slot=4)
+    assert not body["ok"] and "slot must be 0 to 3" in body["error"] and calls == []
+
+
 def test_batch_runs_in_order(ask):
     body, calls = ask("batch", commands=[
         {"op": "drop", "args": {"name": "callmemaybebs", "deck": 1, "queue": False}},
@@ -154,12 +188,16 @@ def test_set_state(ask):
                    "songs": [], "discs": []},
     }
     assert "filter" not in scheduled  # FUSER picks what it wants only when it starts
-    done, open_ = state["goals"]
+    done, open_, perform = state["goals"]
     assert (done["name"], done["completed"], done["active"]) == ("Drop a {btType}", True, False)
     # false, not null: an answer of false must not fall through to the fallback
     assert (open_["completed"], open_["active"], open_["kind"]) == (False, True, "ShowGoalQuota")
     # The song the set features for it, and none for a goal that features none
     assert open_["song"] == "rockthecasbah" and "song" not in done
+    # The instrument a Perform goal features, by title, and the set's featured ones by name
+    assert perform["custom_instrument"] == "Electro Funk Drums"
+    assert "custom_instrument" not in open_
+    assert state["instruments"] == [{"name": "DrumCanvas2", "title": "Electro Funk Drums"}]
     assert [f["genre"] for f in done["filters"]] == [6]  # a stat goal's, from its mix filters
     assert open_["filters"] == [{"type": 2, "disc_type": 0, "instrument": 0, "genre": 8,
                                  "years": 0, "songs": [], "discs": []}]
@@ -182,7 +220,7 @@ def test_set_state_reads_each_part_alone(ask):
     assert body["ok"] and state["requests"] is None
     assert state["problems"] == ["requests: RequestMgr not found, open a freestyle session or "
                                  "a campaign set first"]
-    assert state["freshness"]["value"] == 0.5 and len(state["goals"]) == 2
+    assert state["freshness"]["value"] == 0.5 and len(state["goals"]) == 3
 
 
 def test_read_fields(ask):
@@ -311,4 +349,4 @@ def test_goals_without_featured_songs(ask):
     body, _ = ask("set_state", missing="ShowFlowMgr")
     state = body["result"]
     assert any(p.startswith("featured songs: ") for p in state["problems"])
-    assert len(state["goals"]) == 2 and state["goals"][1]["song"] is None
+    assert len(state["goals"]) == 3 and state["goals"][1]["song"] is None

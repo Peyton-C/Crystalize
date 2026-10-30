@@ -45,6 +45,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `play_mix` | Plays a plan or a saved mix, each step on its bar |
 | `stop_mix` | Stops the mix. The decks keep playing what they have |
 | `keep_alive` | Swaps discs from a list now and then, so a campaign set's crowd meter does not drain while the agent thinks |
+| `perform` | Plays an instrument over the mix for a number of bars, see Campaign |
 | `go_to` | Takes FUSER to a campaign set, freestyle or the main menu without its menus, see Launching |
 | `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck`, `take_snapshot` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar. A snapshot is kept in the player's profile, as one taken with the key is. A disc dropped on a deck Crystalize muted unmutes it on the same downbeat, since FUSER rewards nothing dropped on a muted deck |
 
@@ -118,6 +119,8 @@ The crowd meter drains after 6 idle seconds, calls more than 3 actions in 24 bea
 Freshness, the mix's newness, rises when a disc is played, a mute changes or the number of playing decks changes, and most when the discs together make a mix not heard before. It drains once 16 beats pass with no change. Later sets lean on it, so give `keep_alive` 12 or more discs: a few cycled over two decks soon make only mixes already heard. With `fill`, Crystalize chooses up to 8 discs of a type for each deck named, from owned songs whose key and tempo fit the session, the least stretched first, and only of a genre when one is given; the reply lists what it chose. With `bars`, it changes a disc that many bars after the last change instead of 3, and no longer holds back for the overactive rule. A change every bar holds freshness above 80.
 
 `drop_disc` with `on_pickup` lands a disc on its next pickup, where a vocal or a fill comes in ahead of the bar, for goals that ask for a drop on a pickup. Crystalize queues the disc, so it is loaded, then drops it just after the pickup, and says which beat of the disc's loop it aimed at. Some older custom songs have no pickups, and `drop_disc` refuses those.
+
+`perform` plays an instrument for "Perform on {CustomInstrument} Instrument" and "Perform on any Instrument" goals, which count one-bar performances. Crystalize loads the instrument, presses a pad on each downbeat from the next and lets go just before the bar ends, then unloads it after the last bar. Without `instrument` it plays the one the set features; with one, it takes a name or title of any instrument FUSER has. It returns at once, `get_state` shows how many bars it has `played`, and `stop` lets go early. Sections with a Perform goal loop until it is done, so an agent that cannot perform stalls there. Wait about 3 measures after the goal starts, as for any goal, and ask for as many bars as it still needs.
 
 `get_set` reports the set as FUSER keeps it:
 

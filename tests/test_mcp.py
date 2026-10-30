@@ -724,3 +724,60 @@ def test_go_to_stops_what_plays_and_forgets_the_set(fake, monkeypatch):
     monkeypatch.setattr(mcp.launch, "go_to", lambda bridge, *a, **k: went.append(a) or {"at": "menu"})
     assert server._tool_go_to({"where": "menu"}) == {"at": "menu"}
     assert went == [("menu", None, None)] and server._seen is None
+
+
+INSTRUMENTS = [{"name": "DrumCanvas2", "title": "Electro Funk Drums"},
+               {"name": "Banjo", "title": "Banjo"}]
+
+
+@pytest.fixture
+def stage(fake, monkeypatch):
+    """A set featuring Electro Funk Drums, and the performances started, as (name, bars)."""
+    from crystalize.player import Player
+    played = []
+    monkeypatch.setattr(Player, "perform", lambda self, name, bars: played.append((name, bars)))
+    real = fake.call
+
+    def call(op, **args):
+        if op == "instruments":
+            return copy.deepcopy(INSTRUMENTS)
+        if op == "set_state":
+            return {**real(op, **args), "instruments": [INSTRUMENTS[0]]}
+        return real(op, **args)
+    fake.call = call
+    return played
+
+
+def test_perform_plays_the_featured_instrument(talk, stage):
+    result, failed = call(talk, "perform", bars=4)
+    assert not failed and result["performing"]["title"] == "Electro Funk Drums"
+    assert stage == [("DrumCanvas2", 4)]
+
+
+def test_perform_takes_an_instrument_by_title(talk, stage):
+    call(talk, "perform", bars=8, instrument="banjo")
+    assert stage == [("Banjo", 8)]
+
+
+def test_perform_names_the_instruments_there_are(talk, stage):
+    text, failed = call(talk, "perform", bars=4, instrument="Theremin")
+    assert failed and "Electro Funk Drums, Banjo" in text and stage == []
+
+
+def test_perform_needs_bars(talk, stage):
+    text, failed = call(talk, "perform")
+    assert failed and "bars is 1 to" in text and stage == []
+
+
+def test_perform_stop(talk, monkeypatch):
+    from crystalize.player import Player
+    stopped = []
+    monkeypatch.setattr(Player, "stop_perform", lambda self: stopped.append(True))
+    result, _ = call(talk, "perform", stop=True)
+    assert result == {"performing": False} and stopped
+
+
+def test_goal_text_fills_the_featured_instrument():
+    from crystalize import music
+    assert music.goal_text("Perform on {CustomInstrument} Instrument", None, None,
+                           "Electro Funk Drums") == "Perform on Electro Funk Drums Instrument"

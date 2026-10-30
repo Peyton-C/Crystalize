@@ -341,6 +341,87 @@ function ops.snapshot()
     return {}
 end
 
+------------------------------------------------------------------------------- instruments
+
+-- An instrument is played as its panel plays it, without the panel: InstrumentCraftingState
+-- loads one into a crafting slot, 0 to 3 and not a deck, and takes each pad press. Each bar
+-- a pad is held through counts once to a Perform goal, a tap and a held press alike.
+
+-- EGridInstrumentMode: Soloing plays over the mix, as a performance, where Crafting records
+local SOLOING = 1
+
+local function instrumentEntry(inst)
+    return { name = inst.shortName:ToString(), title = text(inst.Title) }
+end
+
+-- Every instrument FUSER has loaded, MIDI canvases and any other kind. A placeholder
+-- named None is among them
+function ops.instruments()
+    local out = array()
+    for _, inst in ipairs(FindAllOf("InstrumentCelData") or {}) do
+        if valid(inst) then
+            local ok, entry = pcall(instrumentEntry, inst)
+            if ok and entry.name ~= "None" then
+                out[#out + 1] = entry
+            end
+        end
+    end
+    return out
+end
+
+local function findInstrument(name)
+    for _, inst in ipairs(FindAllOf("InstrumentCelData") or {}) do
+        if valid(inst) and inst.shortName:ToString() == name then
+            return inst
+        end
+    end
+    error("no instrument named " .. tostring(name), 0)
+end
+
+local function checkSlot(slot)
+    if math.type(slot) ~= "integer" or slot < 0 or slot > 3 then
+        error("slot must be 0 to 3, got " .. tostring(slot), 0)
+    end
+    return slot
+end
+
+-- Whether a slot's instrument has loaded and can take a press
+local function slotState(slot)
+    local mgr = first("InstrumentCraftingMgr")
+    local crafter = mgr:GetCrafterInSlot(slot)
+    return {
+        slot = slot,
+        crafting = mgr:IsCrafting(slot) == true,
+        ready = valid(crafter) and ask(crafter, "IsFullyInitialized") == true,
+    }
+end
+
+function ops.perform_begin(args)
+    local slot = checkSlot(args.slot)
+    first("InstrumentCraftingState"):NetBeginCrafting(slot, findInstrument(args.name))
+    return slotState(slot)
+end
+
+function ops.perform_state(args)
+    return slotState(checkSlot(args.slot))
+end
+
+-- A pad pressed or let go. UE4SS takes the FGridInstrumentCraftingState as a table
+function ops.perform_press(args)
+    local slot = checkSlot(args.slot)
+    first("InstrumentCraftingState"):NetSetGridCraftingState(slot, {
+        PrimaryActionOn = args.on == true, SecondaryActionOn = false,
+        GridPos = { X = args.x or 0, Y = args.y or 0 }, mode = SOLOING,
+    })
+    return { slot = slot, on = args.on == true }
+end
+
+function ops.perform_end(args)
+    local slot = checkSlot(args.slot)
+    first("InstrumentCraftingState"):NetEndCrafting(slot)
+    return { slot = slot }
+end
+
 ------------------------------------------------------------------------------- launching
 
 -- What FUSER's menus do between the title screen and a set, done without them. Each op is
@@ -614,6 +695,11 @@ local function goals(featured)
                 if data.UseFeaturedSong then
                     entry.song = featured[goalPackage(data)] or NULL
                 end
+                -- The instrument a Perform goal names as {CustomInstrument}, by its title
+                if data.UseFeaturedInstrument then
+                    local ok_i, inst = pcall(function() return data:GetCustomInstrument() end)
+                    entry.custom_instrument = ok_i and text(inst) or NULL
+                end
             end
             out[#out + 1] = entry
         end
@@ -644,6 +730,16 @@ function ops.set_state()
         featured = {}
     end
     try("goals", function() return goals(featured) end)
+    -- The instruments the set features, which its Perform goals name
+    try("instruments", function()
+        local out = array()
+        for _, inst in ipairs(items(first("ShowFlowMgr")._curPrompt.FeaturedInstruments)) do
+            if valid(inst) then
+                out[#out + 1] = instrumentEntry(inst)
+            end
+        end
+        return out
+    end)
     -- How fresh the mix is, which rises on a new drop and fades while nothing changes. It
     -- is not the crowd meter, though it looked like one: it read 0 with the meter halfway
     try("freshness", function()

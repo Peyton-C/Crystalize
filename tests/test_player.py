@@ -456,3 +456,86 @@ def test_change_count_ejects_a_full_pool_deck_then_fills_it(monkeypatch):
     op, args = fuser.sent[1][1:]
     assert op == "drop" and args["deck"] == ejected
     p.stop_keep_alive()
+
+
+class InstrumentBridge(ClockBridge):
+    """FUSER with an instrument that loads once asked, or never with `loads` false."""
+
+    def __init__(self, loads=True, **kwargs):
+        super().__init__(**kwargs)
+        self.loads = loads
+
+    def call(self, op, **args):
+        if op == "perform_state":
+            return {"slot": args["slot"], "crafting": True, "ready": self.loads}
+        return super().call(op, **args)
+
+
+PRESS = {"slot": 0, "x": 2, "y": 2}
+
+
+def test_perform_presses_on_each_downbeat_and_lets_go_before_the_bar_ends():
+    fuser = InstrumentBridge(beat=2.0)
+    p = Player(fuser)
+    p.perform("DrumCanvas2", 2)
+    wait_until(lambda: [op for _, op, _ in fuser.sent] == ["perform_begin"])
+    assert fuser.sent[0][2] == {"slot": 0, "name": "DrumCanvas2"}
+    fuser.to(3.9)  # the press goes out to land on beat 4
+    wait_until(lambda: len(fuser.sent) == 2)
+    assert fuser.sent[1] == (3.9, "perform_press", {**PRESS, "on": True})
+
+    # Let go half a beat short of the bar's end, where the goal counts it
+    fuser.to(6.9)
+    time.sleep(0.03)
+    assert len(fuser.sent) == 2
+    fuser.to(7.4)
+    wait_until(lambda: len(fuser.sent) == 3)
+    assert fuser.sent[2][1:] == ("perform_press", {**PRESS, "on": False})
+    assert p.perform_status()["played"] == 1
+
+    fuser.to(7.9)  # the second bar
+    wait_until(lambda: len(fuser.sent) == 4)
+    assert fuser.sent[3][2]["on"] is True
+    fuser.to(11.4)
+    wait_until(lambda: len(fuser.sent) == 5)
+    assert fuser.sent[4][1:] == ("perform_press", {**PRESS, "on": False})
+
+    # Unloaded two beats into the next bar, so the goal reaches its last count first
+    fuser.to(13.4)
+    time.sleep(0.03)
+    assert len(fuser.sent) == 5 and p.perform_status()["on"]
+    fuser.to(13.9)
+    wait_until(lambda: not p.perform_status()["on"])
+    assert fuser.sent[5][1:] == ("perform_end", {"slot": 0})
+    assert p.perform_status()["played"] == 2 and p.perform_status()["error"] is None
+
+
+def test_stopping_a_performance_lets_go_and_unloads():
+    fuser = InstrumentBridge(beat=3.9)
+    p = Player(fuser)
+    p.perform("DrumCanvas2", 4)
+    wait_until(lambda: len(fuser.sent) == 2)  # loaded and pressed
+    p.stop_perform()
+    assert [op for _, op, _ in fuser.sent] == ["perform_begin", "perform_press",
+                                               "perform_press", "perform_end"]
+    assert fuser.sent[2][2]["on"] is False
+    assert p.perform_status()["on"] is False
+
+
+def test_stopping_before_the_press_only_unloads():
+    fuser = InstrumentBridge(beat=2.0)
+    p = Player(fuser)
+    p.perform("DrumCanvas2", 4)
+    wait_until(lambda: len(fuser.sent) == 1)
+    p.stop_perform()
+    assert [op for _, op, _ in fuser.sent] == ["perform_begin", "perform_end"]
+
+
+def test_an_instrument_that_never_loads_is_reported_and_unloaded(monkeypatch):
+    monkeypatch.setattr(player_module, "PERFORM_LOAD_SECONDS", 0.01)
+    fuser = InstrumentBridge(loads=False, beat=2.0)
+    p = Player(fuser)
+    p.perform("DrumCanvas2", 1)
+    wait_until(lambda: not p.perform_status()["on"])
+    assert "did not load" in p.perform_status()["error"]
+    assert [op for _, op, _ in fuser.sent] == ["perform_begin", "perform_end"]

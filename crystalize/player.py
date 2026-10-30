@@ -52,6 +52,27 @@ KEEP_ALIVE_BARS = 3
 # Unanswered commands in a row before the keep-alive takes FUSER for gone
 KEEP_ALIVE_MISSES = 3
 
+# A performance presses a pad on each downbeat and lets go this far short of the bar's
+# end, as a player phrases it, a bar at a time
+PERFORM_RELEASE_BEATS = 0.5
+
+# A Perform goal counts the time the instrument plays, once for every 4 beats, through the
+# gaps between presses. Its count ran a third of a bar behind the bars played, and
+# unloading the instrument loses the count not yet reached, so it stays loaded this far
+# into the bar after: past the lag, and well short of the 4 beats another count needs
+PERFORM_END_BEATS = 2
+
+# How long an instrument may take to load before a performance gives up on it. One loaded
+# at once in the game, but only after it had been loaded before
+PERFORM_LOAD_SECONDS = 5
+
+# The instrument slot performances play in. FUSER has four, apart from the decks
+PERFORM_SLOT = 0
+
+# The pad pressed, from 0 in each direction. Any pad counts; a 5 by 5 drum kit's middle
+# was the one tried
+PERFORM_PAD = (2, 2)
+
 
 class Player:
     def __init__(self, bridge):
@@ -79,6 +100,9 @@ class Player:
         self.on_send = None  # told every batch sent, for the set's log
         # When the set was last read and how many measures its open crowd requests had left
         self._request_hold: tuple[float, int] | None = None
+        self._performer: threading.Thread | None = None
+        self._perform_stop = threading.Event()
+        self._perform_status: dict = {}
 
     def start(self, name: str, schedule: list, end_bar: int, opening_decks: set[int]) -> None:
         """Play `schedule`, a Plan's, stopping any mix already playing. `opening_decks`
@@ -147,6 +171,84 @@ class Player:
     def keep_alive_status(self) -> dict | None:
         with self._lock:
             return dict(self._keep_status) if self._keep_status else None
+
+    def perform(self, instrument: str, bars: int) -> None:
+        """Play `instrument` over the mix as a player would for `bars` one-bar
+        performances: load it, press a pad on each downbeat from the next and let go just
+        before the bar ends. Stops any performance already going."""
+        self.stop_perform()
+        self._perform_stop = threading.Event()
+        with self._lock:
+            self._perform_status = {"instrument": instrument, "bars": bars, "on": True,
+                                    "played": 0, "error": None}
+        self._performer = threading.Thread(
+            target=self._perform, args=(instrument, bars, self._perform_stop), daemon=True)
+        self._performer.start()
+
+    def stop_perform(self) -> None:
+        """Let go of the pad and unload the instrument, if a performance is going."""
+        if self._performer and self._performer.is_alive():
+            self._perform_stop.set()
+            self._performer.join()
+
+    def perform_status(self) -> dict | None:
+        with self._lock:
+            return dict(self._perform_status) if self._perform_status else None
+
+    def _perform(self, instrument, bars, stop) -> None:
+        slot = {"slot": PERFORM_SLOT}
+        pad = {"x": PERFORM_PAD[0], "y": PERFORM_PAD[1]}
+        begun = held = False
+        try:
+            self.bridge.call("perform_begin", name=instrument, **slot)
+            begun = True
+            deadline = time.monotonic() + PERFORM_LOAD_SECONDS
+            while not self.bridge.call("perform_state", **slot).get("ready"):
+                if time.monotonic() > deadline:
+                    raise GameError(f"{instrument} did not load in {PERFORM_LOAD_SECONDS} seconds")
+                if stop.wait(POLL_SECONDS):
+                    return
+            start = _next_downbeat(*self._clock())
+            for bar in range(bars):
+                press = start + bar * BEATS_PER_BAR
+                if not self._until(press, stop):
+                    return
+                self._send([("perform_press", {**slot, **pad, "on": True})])
+                held = True
+                if not self._until(press + BEATS_PER_BAR - PERFORM_RELEASE_BEATS, stop):
+                    return
+                self._send([("perform_press", {**slot, **pad, "on": False})])
+                held = False
+                with self._lock:
+                    self._perform_status["played"] = bar + 1
+            self._until(start + bars * BEATS_PER_BAR + PERFORM_END_BEATS, stop)
+        except GameError as e:
+            with self._lock:
+                self._perform_status["error"] = str(e)
+        finally:
+            # Let go and unload even when stopped early or after an error, so the
+            # instrument never sounds on by itself
+            try:
+                if held:
+                    self._send([("perform_press", {**slot, **pad, "on": False})])
+                if begun:
+                    self._send([("perform_end", slot)])
+            except GameError as e:
+                with self._lock:
+                    self._perform_status["error"] = self._perform_status["error"] or str(e)
+            with self._lock:
+                self._perform_status["on"] = False
+
+    def _until(self, target, stop) -> bool:
+        """Wait until a command sent now would reach FUSER just after clock beat `target`,
+        as _send_at does, but give up when `stop` is set. Returns whether it waited it out."""
+        while not stop.is_set():
+            beat, per_second, trip = self._clock()
+            wait = _wait(target, beat, per_second, trip)
+            if wait < SETTLE_SECONDS:
+                return not stop.wait(max(wait, 0))
+            stop.wait(POLL_SECONDS)
+        return False
 
     def _update(self, **fields) -> None:
         with self._lock:

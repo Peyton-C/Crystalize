@@ -90,7 +90,7 @@ end
 local function goal(label, goalName, done, featured)
     return object(label, {
         _myGoalData = object(label .. " data", { GoalName = name(goalName), GoalDescription = name(""),
-            UseFeaturedSong = featured == true,
+            UseFeaturedSong = featured == true, UseFeaturedInstrument = false,
             CelFilters = { Filters = tarrayOf({ { FilterTo = 2, LoopType = 0, instrument = 0, Genre = 8,
                 YearRange = 0, songs = tarrayOf({}), Cels = tarrayOf({}) } }) },
             GetFullName = function()
@@ -110,6 +110,13 @@ doneGoal._myGoalData.MixFilterSet = { MixFilters = tarrayOf({ { NumCelsMatching 
     Filters = tarrayOf({ { FilterTo = 2, LoopType = 0, instrument = 0, Genre = 6, YearRange = 0,
         songs = tarrayOf({}), Cels = tarrayOf({}) } }) } } }) }
 local openGoal = goal("GoalBass", "Drop {bsGuitar} from \"{RequiredSong}\"", false, true)
+local performGoal = goal("GoalPerform", "Perform on {CustomInstrument} Instrument", false)
+performGoal._myGoalData.UseFeaturedInstrument = true
+performGoal._myGoalData.GetCustomInstrument = function() return name("Electro Funk Drums") end
+
+local drums = object("DrumCanvas2", { shortName = name("DrumCanvas2"), Title = name("Electro Funk Drums") })
+local instruments = { drums, object("NoInstrument", { shortName = name("None"), Title = name("") }),
+                      object("Banjo", { shortName = name("Banjo"), Title = name("Banjo") }) }
 -- A goal's data as the set's config holds it: the asset, of which the goal holds a copy
 local function asset(label)
     return object(label .. " asset", { GetFullName = function()
@@ -165,8 +172,8 @@ local world = {
           ProceduralRequests = 1, MyRequest = INVALID },
     }) }) },
     ShowGoalsMgr = { object("ShowGoalsMgr", {
-        _allGoalsUsedThisShow = tarrayOf({ doneGoal, openGoal }),
-        _currentlyActiveGoals = tarrayOf({ openGoal }),
+        _allGoalsUsedThisShow = tarrayOf({ doneGoal, openGoal, performGoal }),
+        _currentlyActiveGoals = tarrayOf({ openGoal, performGoal }),
     }) },
     SkillStat_Freshness = { object("Freshness", {
         GetCurStatValue = function() return 0.5 end,
@@ -192,6 +199,7 @@ local world = {
                 PerfectTimingBonusPoints = 800, CrowdMeterPoints = 2400 } } end,
         _curPrompt = object("M_0030", {
             FeaturedSongs = tarrayOf({ song, casbah }),
+            FeaturedInstruments = tarrayOf({ drums }),
             ShowSections = tarrayOf({
                 { GoalsThisSection = tarrayOf({
                     { ShowGoalData = asset("GoalBeat"), FeaturedSongIndex = 0 },
@@ -233,6 +241,14 @@ local world = {
     DeskState = { object("DeskState") },
     AudioController = { object("AudioController") },
     SavedMomentsMgr = { object("SavedMomentsMgr") },
+    InstrumentCelData = instruments,
+    InstrumentCraftingState = { object("InstrumentCraftingState") },
+    InstrumentCraftingMgr = { object("InstrumentCraftingMgr", {
+        IsCrafting = function() return true end,
+        GetCrafterInSlot = function()
+            return object("Crafter", { IsFullyInitialized = function() return true end })
+        end,
+    }) },
 }
 if missing then
     world[missing] = nil

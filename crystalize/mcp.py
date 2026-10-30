@@ -58,6 +58,8 @@ GO_TO_SIGN_IN_SECONDS = 45
 # The meter level await_event warns below unless told otherwise. It drains a point a
 # second once idle, so this is half a minute from failing the set
 METER_LOW = 30
+# The longest performance perform plays in one call. Perform goals have asked for 4 and 8
+PERFORM_BARS = 16
 
 DECK = {"type": "integer", "minimum": 1, "maximum": 4, "description": "1 to 4"}
 KEY = {"type": "string", "description": "Ab for A flat major, Abm for minor"}
@@ -308,6 +310,19 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "perform",
+        "description": "Play an instrument over the mix, as a player holding one of its pads, "
+                       "from the next bar for `bars` bars. A Perform goal counts each bar "
+                       "once. Without `instrument`, the one the set features; else a name or "
+                       "title of any FUSER has. Returns at once; get_state follows it. With "
+                       "`stop`, it lets go.",
+        "inputSchema": {"type": "object", "properties": {
+            "bars": {"type": "integer", "minimum": 1, "maximum": PERFORM_BARS},
+            "instrument": {"type": "string"},
+            "stop": {"type": "boolean"},
+        }},
+    },
+    {
         "name": "set_key",
         "description": "Change the session's key from the next bar. Every deck follows.",
         "inputSchema": {"type": "object", "properties": {"key": KEY}, "required": ["key"]},
@@ -450,7 +465,9 @@ PROMPTS = [
             "Include only N discs counts every deck: Include only 1 disc, a beat, is one beat "
             "playing alone. Eject a disc means eject, and only counts on a deck with a disc, so "
             "check get_state first. Mute a beat, a loop or a song's disc means mute_deck; unmute "
-            "it after unless the goal wants it silent. Take a Snapshot means take_snapshot.\n"
+            "it after unless the goal wants it silent. Take a Snapshot means take_snapshot. A "
+            "Perform goal counts each bar an instrument plays: perform with bars as many as "
+            "it still needs. Its section waits until it is done.\n"
             "4. A request names a genre, an instrument, a decade or a song. search_songs finds "
             "the disc with genre, instrument, disc_type, year_min and year_max, or query. A "
             "song is named with its artist, and two songs can share a title, so query both. When "
@@ -525,6 +542,7 @@ class Server:
         for call in self._calls:
             call.join()
         self.player.stop()
+        self.player.stop_perform()
         return 0
 
     def _send(self, message: dict) -> None:
@@ -679,6 +697,9 @@ class Server:
             if keeping.get("last"):
                 keeping["last"] = {**keeping["last"], "deck": keeping["last"]["deck"] + 1}
             result["keep_alive"] = {k: v for k, v in keeping.items() if v is not None}
+        performing = self.player.perform_status()
+        if performing:
+            result["perform"] = {k: v for k, v in performing.items() if v is not None}
         return result
 
     def _tool_get_set(self, args: dict) -> dict:
@@ -831,7 +852,8 @@ class Server:
     @staticmethod
     def _goal_text(g: dict, titles: dict) -> str | None:
         return music.goal_text(g.get("name"), titles.get(g.get("song"), g.get("song")),
-                               g.get("filters")) or g.get("description")
+                               g.get("filters"), g.get("custom_instrument")) \
+            or g.get("description")
 
     def _set_view(self, raw: dict) -> dict:
         measure = raw.get("measure")
@@ -1161,6 +1183,39 @@ class Server:
         self.player.on_downbeat([("snapshot", {})])
         return {"snapshot": True}
 
+    def _tool_perform(self, args: dict) -> dict:
+        if args.get("stop"):
+            self.player.stop_perform()
+            return {"performing": False}
+        bars = args.get("bars")
+        if not isinstance(bars, int) or isinstance(bars, bool) or not 1 <= bars <= PERFORM_BARS:
+            raise ValueError(f"bars is 1 to {PERFORM_BARS}")
+        instrument = self._instrument(args.get("instrument"))
+        self.player.perform(instrument["name"], bars)
+        return {"performing": instrument, "bars": bars}
+
+    def _instrument(self, asked: str | None) -> dict:
+        """The instrument asked for, by name or title, or else the set's first featured one,
+        or failing that, outside a set or in one featuring none, the first FUSER has."""
+        everything = self.bridge.call("instruments")
+        if asked:
+            want = asked.casefold()
+            found = next((i for i in everything if i["name"].casefold() == want
+                          or str(i.get("title") or "").casefold() == want), None)
+            if found is None:
+                raise ValueError(f"FUSER has no instrument {asked}; it has "
+                                 + ", ".join(str(i.get("title") or i["name"]) for i in everything))
+            return found
+        try:
+            featured = self.bridge.call("set_state").get("instruments") or []
+        except GameError:
+            featured = []
+        if featured:
+            return featured[0]
+        if not everything:
+            raise GameError("FUSER has no instruments loaded; open a set or freestyle first")
+        return everything[0]
+
     def _tool_set_key(self, args: dict) -> dict:
         key, mode = music.parse_key(str(args["key"]))
         # On the downbeat, as drops are: the campaign's crowd favors a change made on the
@@ -1182,6 +1237,7 @@ class Server:
         # left is over, so its log and what the agent last saw of it go too
         self.player.stop()
         self.player.stop_keep_alive()
+        self.player.stop_perform()
         self._log.end()
         self._seen, self._warned = None, set()
         try:
