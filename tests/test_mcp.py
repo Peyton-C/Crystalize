@@ -936,3 +936,55 @@ def test_fade_deck_defaults_to_silence_over_a_bar(talk, fake):
 def test_fade_deck_rejects(talk, fake, args):
     _, failed = call(talk, "fade_deck", deck=1, **args)
     assert failed and "gain" not in fake.ops()
+
+
+# ---------------------------------------------------------- plans and the running game
+
+def test_a_plan_takes_an_effect_by_title(talk, fake, monkeypatch):
+    from crystalize.player import Player
+    started = []
+    monkeypatch.setattr(Player, "start", lambda self, *a: started.append(a))
+    real = fake.call
+    fake.call = lambda op, **args: [{"name": "Flanger_01", "title": "Flanger"}] if op == "effects" \
+        else real(op, **args)
+    steps = PLAN["steps"] + [{"bar": 8, "do": "fx", "deck": 1, "fx": "flanger"}]
+    _, failed = call(talk, "play_mix", key="G", bpm=120, steps=steps)
+    assert not failed
+    schedule = dict(started[0][1])
+    assert ("fx", {"deck": 0, "name": "Flanger_01", "on": True}) in schedule[8]
+
+
+def test_a_plan_with_an_effect_fuser_lacks_is_refused(talk, fake):
+    real = fake.call
+    fake.call = lambda op, **args: [{"name": "Flanger_01", "title": "Flanger"}] if op == "effects" \
+        else real(op, **args)
+    text, failed = call(talk, "plan_mix", key="G", bpm=120, steps=PLAN["steps"] + [
+        {"bar": 8, "do": "fx", "fx": "Theremin"}])
+    assert failed and "no effect Theremin" in text
+
+
+def test_a_plan_with_fx_is_still_checked_with_fuser_closed(talk, fake):
+    fake.fail = {"effects": "FUSER is not answering"}
+    report, failed = call(talk, "plan_mix", key="G", bpm=120, steps=PLAN["steps"] + [
+        {"bar": 8, "do": "fx", "fx": "flanger"}])
+    assert not failed and report["bars"] == 24
+
+
+def test_a_saved_mix_keeps_the_new_steps(talk):
+    steps = PLAN["steps"] + [{"bar": 8, "do": "riser", "mode": "steady"},
+                             {"bar": 16, "do": "fade", "deck": 1, "beats": 8}]
+    _, failed = call(talk, "save_mix", name="Rise", key="G", bpm=120, steps=steps)
+    assert not failed
+    loaded, _ = call(talk, "load_mix", name="Rise")
+    assert loaded["steps"] == steps
+    report, _ = call(talk, "plan_mix", mix="Rise")
+    assert any(s.get("riser") == "empty" for s in report["segments"])
+
+
+def test_a_plan_takes_a_disc_recorded_this_session(talk, fake, monkeypatch):
+    from crystalize.player import Player
+    monkeypatch.setattr(Player, "recorded", lambda self: [
+        {"disc": "CraftedInstrument_Bass_1", "instrument": "Bass", "deck": 1}])
+    report, failed = call(talk, "plan_mix", key="G", bpm=120, steps=[
+        {"bar": 0, "do": "drop", "deck": 4, "disc": "CraftedInstrument_Bass_1"}])
+    assert not failed and report["segments"][0]["decks"][3] == "recorded Bass bass"

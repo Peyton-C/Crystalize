@@ -86,7 +86,33 @@ A plan is the opening key and tempo and a list of steps, each on a bar counted f
 ]}
 ```
 
-`do` is `drop`, `eject`, `mute`, `unmute`, `key` or `tempo`. Steps on one bar happen together. The mix ends at `end_bar`, 16 bars after the last step unless the plan says.
+Steps on one bar happen together. The mix ends at `end_bar`, 16 bars after the last step unless the plan says.
+
+| `do` | Takes | What |
+| --- | --- | --- |
+| `drop` | `deck`, `disc`, `on_pickup` | Plays a disc. With `on_pickup` it is cued on the bar and lands on its next pickup, which can be many bars off, and the mix's later steps do not wait for it |
+| `eject` | `deck` | Empties a deck |
+| `mute`, `unmute` | `deck` | |
+| `solo`, `unsolo` | `deck` | A soloed deck is the only one heard. It stays soloed through a drop or an eject |
+| `key` | `key` | Changes the session's key |
+| `tempo` | `bpm` | Changes the session's tempo |
+| `cue` | `deck`, `disc` | Cues a disc. Cue on an earlier bar than the one it lands on |
+| `drop_cue` | | Lands every cued disc together. A deck's mute and volume stay as they were |
+| `swap` | `deck`, `disc`, `on_pickup` | FUSER's hot swap. Crystalize cues the disc on the bar before, and the disc replaced goes back in the cue, where a later `drop_cue` or riser lands it |
+| `fx` | `deck`, `fx`, `on` | Turns an effect on or off, over all four decks without `deck`. Name the effect the first time a slot is used |
+| `fade` | `deck`, `to`, `beats` | Fades a deck's volume, to 0 over 4 beats unless you say |
+| `riser` | `mode` | Plays a riser. See below |
+| `snapshot` | | Saves the mix playing to the player's profile |
+| `perform` | `bars`, `instrument` | Plays an instrument over the mix from this bar, loading it 2 bars ahead |
+| `record` | `deck`, `as`, `instrument`, `queue` | Records a 2 bar loop from this bar and lands the disc on the bar it ends. See below |
+
+`fx`, `fade`, `riser`, `perform` and `record` do what the tools of those names do, see Campaign. Effects and instruments go by name or title, and an unknown one is refused while FUSER is running. A deck's solo, mute and volume go back to normal when the next mix starts. An effect stays on until a step turns it off.
+
+A riser takes 4 bars. The decks empty on its fourth and the cued discs land on the bar after, with the decks nothing was cued on left empty, or the whole mix back if nothing was cued when it started. The timeline marks those bars, and warns of a step landing inside them. `smart` moves the session to the cued lead's key and tempo, and the timeline follows. `random` picks its own, so a plan cannot know what comes after, and says so.
+
+`record` needs `deck`, the one FUSER keeps for the disc's type: beat 1, bass 2, loop 3, lead 4. FUSER chooses it, the plan only says what it expects, and `get_state` shows an error under `mix` if the disc lands elsewhere. `as` names the disc for later steps, from the bar after it lands: `{"bar": 12, "do": "drop", "deck": 4, "disc": "mybass"}`. A step dropping a recording that failed is skipped and the mix goes on. Discs recorded earlier in the session also work by their full names, until FUSER restarts.
+
+The instrument slot takes one performance or recording at a time, so the next must start at least 3 bars after the last ends, for it to finish and the next to load.
 
 `plan_mix` refuses a plan that cannot play, with every problem listed: a disc that does not exist or is not owned, an empty deck ejected, a tempo FUSER does not allow. A plan that can play comes back as a timeline of segments, the stretches where nothing changes. Each has its bars, the time it starts, the key, tempo and energy, and what each deck plays, with the pitch shift and stretch FUSER gives it. Pass `from_bar` and `to_bar` to list part of a long mix; the checks over the whole mix are always there.
 
@@ -100,13 +126,18 @@ A plan is the opening key and tempo and a list of steps, each on a bar counted f
 | `pitched far` | FUSER shifts the disc further than it takes unnoticed, from the disc's own table for the session key. Up thins a part sooner than down darkens it, so a loop or instrumental lead is flagged past 3 semitones up or 5 down, a vocal past 3 up or 4 down, and a bassline, which starts low, past 5 either way |
 | `no major version`, `no minor version` | The disc has no version in the session's mode |
 | `stretched too far` | More than 8% off the disc's own tempo, or 16% above 140 BPM, allowing for half and double time |
-| `silence` | Nothing is playing |
+| `silence` | Nothing is heard, counting solos and decks faded out. Not during a riser's empty bar, which its own sound fills |
 | off the phrase | A step not on a multiple of 4 bars |
 | `nothing changes` | More than 32 bars with no step |
 | dropped twice | The same disc dropped more than once |
 | key clash | A key change that is not to the relative key or a neighbour |
 | tempo jump | A tempo change of more than 8% |
 | energy jump | Energy moving by 3 or more between segments, from the tags |
+| inside a riser | A step landing in the bars a riser is building or emptying |
+| riser's key | A smart riser moved the session, or a random one may have |
+| next pickup | A disc may wait more than 4 bars for its pickup |
+| silent cue | A cue landing on a muted or faded-out deck, which FUSER rewards nothing for |
+| recording's key | A recording with nothing pitched playing moves the session to its instrument's key |
 
 A check is a warning, not a rule. The agent should fix it or know why it is keeping it.
 

@@ -15,7 +15,8 @@ import time
 
 from . import __version__, launch, music, store
 from .bridge import GameError
-from .mixes import Plan
+from . import mixes
+from .mixes import FADE_MAX_BEATS, PERFORM_BARS, Plan
 from .player import REMEMBERED_DISCS as REMEMBERED, Player
 
 PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
@@ -58,9 +59,6 @@ GO_TO_SIGN_IN_SECONDS = 45
 # The meter level await_event warns below unless told otherwise. It drains a point a
 # second once idle, so this is half a minute from failing the set
 METER_LOW = 30
-# The longest performance perform plays in one call. Perform goals have asked for 4 and 8
-PERFORM_BARS = 16
-FADE_MAX_BEATS = 64
 
 DECK = {"type": "integer", "minimum": 1, "maximum": 4, "description": "1 to 4"}
 KEY = {"type": "string", "description": "Ab for A flat major, Abm for minor"}
@@ -69,11 +67,30 @@ STEP = {
     "type": "object",
     "properties": {
         "bar": {"type": "integer", "description": "From 0, the bar the opening discs land on"},
-        "do": {"type": "string", "enum": ["drop", "eject", "key", "tempo", "mute", "unmute"]},
+        "do": {"type": "string", "enum": list(mixes.ACTIONS)},
         "deck": DECK,
-        "disc": {"type": "string", "description": "For drop: a disc name from search_songs"},
+        "disc": {"type": "string",
+                 "description": "For drop, cue and swap: a disc name from search_songs, or what "
+                                "a record step called its disc"},
         "key": KEY,
         "bpm": {"type": "integer"},
+        "on_pickup": {"type": "boolean",
+                      "description": "For drop and swap: land on the disc's next pickup from "
+                                     "this bar"},
+        "fx": {"type": "string", "description": "For fx: the effect's name or title. Needed the "
+                                                "first time a slot is used"},
+        "on": {"type": "boolean", "description": "For fx. Default true"},
+        "to": {"type": "number", "description": "For fade: 0 silent to 1 full. Default 0"},
+        "beats": {"type": "integer", "minimum": 1, "maximum": FADE_MAX_BEATS,
+                  "description": "For fade. Default 4"},
+        "mode": {"type": "string", "enum": list(music.RISER_MODES),
+                 "description": "For riser. Default smart"},
+        "bars": {"type": "integer", "minimum": 1, "maximum": PERFORM_BARS,
+                 "description": "For perform"},
+        "instrument": {"type": "string", "description": "For perform and record, else the set's "
+                                                        "featured one"},
+        "as": {"type": "string", "description": "For record: a name later steps drop it by"},
+        "queue": {"type": "boolean", "description": "For record: cue the disc, not play it"},
     },
     "required": ["bar", "do"],
 }
@@ -196,8 +213,9 @@ TOOLS = [
                        "one song on every deck, pitched far, no version in the session's mode, "
                        "stretched too far. Checks over the whole mix follow: steps off the "
                        "phrase, stretches where nothing changes, discs dropped twice, key "
-                       "clashes, tempo and energy jumps. A plan that cannot play is refused "
-                       "with every problem listed.",
+                       "clashes, tempo and energy jumps. Solos, fades and risers count "
+                       "towards what is heard. A plan that cannot play is refused with every "
+                       "problem listed.",
         "inputSchema": {"type": "object", "properties": {
             **PLAN,
             "mix": {"type": "string", "description": "A saved mix to check, in place of a plan"},
@@ -468,7 +486,8 @@ MIX_CRAFT = (
     "third's loop and a fourth's vocal. Keep one vocal at a time. Change something every 8 "
     "or 16 bars, always on a multiple of 8, and one or two decks at a time, so the listener "
     "hears each new part arrive; a new vocal over a familiar beat is the strongest move. "
-    "Muting the beat for 4 or 8 bars and bringing it back is a breakdown and a drop. Choose "
+    "Muting the beat for 4 or 8 bars and bringing it back is a breakdown and a drop, and a "
+    "riser into cued discs is a bigger one. Choose "
     "the session key and tempo for the vocal, which suffers most from shifting, and change "
     "key only to the relative key or a neighbour. At 120 BPM a bar is two seconds."
 )
@@ -754,10 +773,26 @@ class Server:
 
     def _plan(self, args: dict) -> tuple[str | None, Plan]:
         self._library()
-        if args.get("mix"):
-            plan = store.load_mix(args["mix"])
-            return plan["name"], Plan(plan, self._discs, self._bpm_range, store.tags())
-        return None, Plan(args, self._discs, self._bpm_range, store.tags())
+        self._forget_recorded_if_restarted()
+        discs = {**self._discs, **{r["disc"]: mixes.recorded_disc(r["disc"], r["instrument"], r["deck"])
+                                   for r in self.player.recorded()}}
+        raw = store.load_mix(args["mix"]) if args.get("mix") else args
+        plan = Plan(raw, discs, self._bpm_range, store.tags())
+        self._name_in_game(plan)
+        return raw.get("name") if args.get("mix") else None, plan
+
+    def _name_in_game(self, plan: Plan) -> None:
+        """Turn the titles a plan gives effects and instruments into FUSER's names, and refuse
+        ones it does not have. Only a running game knows them, so with FUSER closed a plan is
+        still checked and this waits for play_mix."""
+        try:
+            for step in plan.steps:
+                if step["do"] == "fx" and step["fx"]:
+                    step["fx"] = self._effect(step["fx"], step["deck"])["name"]
+                elif step["do"] in ("perform", "record"):
+                    step["instrument"] = self._instrument(step["instrument"])["name"]
+        except GameError:
+            pass
 
     # --------------------------------------------------------------------- tools
 
@@ -1159,7 +1194,8 @@ class Server:
     def _tool_play_mix(self, args: dict) -> dict:
         name, plan = self._plan(args)
         schedule = plan.schedule()
-        opening = {a["deck"] for op, a in (schedule[0][1] if schedule else []) if op == "drop"}
+        opening = {a["deck"] for op, a in (schedule[0][1] if schedule else [])
+                   if op == "drop" and not a["queue"] and schedule[0][0] == 0}
         self.bridge.call("ping")  # a closed game fails here, not inside the player
         report = plan.report(0, 0)
         self.player.start(name or "unsaved plan", schedule, plan.end, opening)

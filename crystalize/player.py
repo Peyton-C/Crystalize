@@ -92,6 +92,9 @@ RECORD_END_BEATS = 1
 # riser, random as low as 60 BPM, and 16 beats at that is the longest it can take
 RISER_HOLD_SECONDS = 16
 
+# Commands in a schedule that are the player's to run beside the bar clock, not FUSER's
+JOBS = ("fade", "perform", "record", "pickup")
+
 # The instrument slot performances play in. FUSER has four, apart from the decks
 PERFORM_SLOT = 0
 
@@ -134,6 +137,10 @@ class Player:
         self._perform_stop = threading.Event()
         self._perform_status: dict = {}
         self._recorded: list[dict] = []  # discs made this session, newest last
+        self._soloed: set[int] = set()  # decks this player soloed and has not unsoloed
+        self._named: dict[str, str] = {}  # what the mix calls its recordings, to FUSER's names
+        self._mix_performs = False  # whether the instrument going is the mix's, to stop with it
+        self._awaited: set[str] = set()  # the names of the mix's recordings
 
     def start(self, name: str, schedule: list, end_bar: int, opening_decks: set[int]) -> None:
         """Play `schedule`, a Plan's, stopping any mix already playing. `opening_decks`
@@ -142,6 +149,8 @@ class Player:
         self.stop()
         self._stop = threading.Event()
         with self._lock:
+            self._named.clear()
+            self._awaited.clear()
             self._status = {"mix": name, "playing": True, "bar": None, "bars": end_bar,
                             "error": None}
         self._thread = threading.Thread(
@@ -152,6 +161,9 @@ class Player:
         if self._thread and self._thread.is_alive():
             self._stop.set()
             self._thread.join()
+        if self._mix_performs:
+            self.stop_perform()
+            self._mix_performs = False
         with self._lock:
             if self._status.get("playing"):
                 self._status["playing"] = False
@@ -203,31 +215,38 @@ class Player:
         with self._lock:
             return dict(self._keep_status) if self._keep_status else None
 
-    def perform(self, instrument: str, bars: int) -> None:
+    def perform(self, instrument: str, bars: int, when=None) -> None:
         """Play `instrument` over the mix as a player would for `bars` one-bar
         performances: load it, press a pad on each downbeat from the next and let go just
-        before the bar ends. Stops any performance already going."""
+        before the bar ends. Stops any performance already going. `when` gives the clock
+        beat to start on instead, if it can still be reached once loaded."""
         self.stop_perform()
+        self._mix_performs = False
         self._perform_stop = threading.Event()
         with self._lock:
             self._perform_status = {"instrument": instrument, "bars": bars, "on": True,
                                     "played": 0, "error": None}
         self._performer = threading.Thread(
-            target=self._perform, args=(instrument, bars, self._perform_stop), daemon=True)
+            target=self._perform, args=(instrument, bars, self._perform_stop, when), daemon=True)
         self._performer.start()
 
-    def record(self, instrument: str, queue: bool = False) -> None:
+    def record(self, instrument: str, queue: bool = False, when=None, name=None,
+               deck=None) -> None:
         """Record a loop on `instrument` and turn it into a disc: load it, press a pad on
         each beat of the next RECORD_BEATS from a downbeat, and spawn the disc on the downbeat
-        after, cued with `queue`. Shares the slot with a performance, so it stops any going."""
+        after, cued with `queue`. Shares the slot with a performance, so it stops any going.
+        For a mix, `when` gives the clock beat to start on, as perform's does, `name` what
+        the mix calls the disc, and `deck` where the plan expects it to land."""
         self.stop_perform()
+        self._mix_performs = False
         self._perform_stop = threading.Event()
         with self._lock:
             self._perform_status = {"instrument": instrument, "beats": RECORD_BEATS, "on": True,
                                     "played": 0, "disc": None, "deck": None, "queued": queue,
                                     "error": None}
         self._performer = threading.Thread(
-            target=self._record, args=(instrument, queue, self._perform_stop), daemon=True)
+            target=self._record, args=(instrument, queue, self._perform_stop, when, name, deck),
+            daemon=True)
         self._performer.start()
 
     def recorded(self) -> list[dict]:
@@ -239,6 +258,7 @@ class Player:
         """Forget the recorded discs, as when a new set is loaded."""
         with self._lock:
             self._recorded.clear()
+            self._named.clear()
 
     def stop_perform(self) -> None:
         """Let go of the pad and unload the instrument, if a performance or recording is going."""
@@ -280,11 +300,14 @@ class Player:
                 self._faded.add(deck)
             if self.on_send:
                 self.on_send([("fade", {"deck": deck, "to": to, "beats": beats})])
+            # Each step aims at its own time: a sleep between them adds every round trip, and
+            # an 8 beat fade ran a bar over, into the plan's next step on that deck
+            began = time.monotonic()
             for step in range(1, steps + 1):
                 # Sent alone rather than through _send: the steps are one action to the
                 # crowd and the log, not dozens
                 self.bridge.call("gain", deck=deck, gain=start + (to - start) * step / steps)
-                if step < steps and stop.wait(step_seconds):
+                if step < steps and stop.wait(max(began + step * step_seconds - time.monotonic(), 0)):
                     return
             if to >= 1:
                 with self._lock:
@@ -296,7 +319,13 @@ class Player:
         with self._lock:
             return dict(self._perform_status) if self._perform_status else None
 
-    def _perform(self, instrument, bars, stop) -> None:
+    def _start_beat(self, when) -> int:
+        """The clock beat an instrument starts on: the one `when` asks for, or failing that,
+        being unset or already past, the next downbeat."""
+        soonest = _next_downbeat(*self._clock())
+        return soonest if when is None else max(when(), soonest)
+
+    def _perform(self, instrument, bars, stop, when=None) -> None:
         slot = {"slot": PERFORM_SLOT}
         pad = {"x": PERFORM_PAD[0], "y": PERFORM_PAD[1]}
         begun = held = False
@@ -305,7 +334,7 @@ class Player:
             begun = True
             if not self._loaded(instrument, stop):
                 return
-            start = _next_downbeat(*self._clock())
+            start = self._start_beat(when)
             for bar in range(bars):
                 press = start + bar * BEATS_PER_BAR
                 if not self._until(press, stop):
@@ -335,7 +364,7 @@ class Player:
                 return False
         return True
 
-    def _record(self, instrument, queue, stop) -> None:
+    def _record(self, instrument, queue, stop, when=None, name=None, expected=None) -> None:
         slot = {"slot": PERFORM_SLOT}
         pad = {"x": PERFORM_PAD[0], "y": PERFORM_PAD[1], "record": True}
         begun = held = False
@@ -345,7 +374,7 @@ class Player:
             if not self._loaded(instrument, stop):
                 return
             before = _discs_on_decks(self.bridge.call("state"))
-            start = _next_downbeat(*self._clock())
+            start = self._start_beat(when)
             for beat in range(RECORD_BEATS):
                 if not self._until(start + beat, stop):
                     return
@@ -361,7 +390,7 @@ class Player:
             if not self._until(spawn, stop):
                 return
             self._send([("record_spawn", {**slot, "queue": queue})])
-            self._find_recorded(instrument, before, stop)
+            self._find_recorded(instrument, before, stop, name, expected)
             self._until(spawn + RECORD_END_BEATS, stop)
         except GameError as e:
             with self._lock:
@@ -369,7 +398,7 @@ class Player:
         finally:
             self._let_go(slot, pad, held, begun)
 
-    def _find_recorded(self, instrument, before, stop) -> None:
+    def _find_recorded(self, instrument, before, stop, name=None, expected=None) -> None:
         """Read which disc the spawn made and where it went: FUSER names it and picks its
         deck, and says neither. It is the one of this instrument's on a deck that was not
         there before the recording, which also covers discs from before a server restart."""
@@ -384,6 +413,12 @@ class Player:
                             self._recorded.append(
                                 {"disc": disc, "instrument": instrument, "deck": deck})
                             self._perform_status.update(disc=disc, deck=deck)
+                            if name:
+                                self._named[name] = disc
+                            if expected is not None and deck != expected:
+                                self._status["error"] = (
+                                    f"{name or disc} landed on deck {deck + 1}, not the deck "
+                                    f"{expected + 1} the plan expects")
                         return
             if time.monotonic() > deadline:
                 raise GameError(f"the disc recorded on {instrument} did not reach a deck in "
@@ -448,8 +483,6 @@ class Player:
         with self._lock:
             self._riser_ends = time.monotonic() + RISER_HOLD_SECONDS
         self.on_downbeat([("riser", {"mode": mode})])
-        with self._lock:
-            self._riser_ends = time.monotonic() + RISER_HOLD_SECONDS
 
     def on_pickup(self, commands, pickups: list[float], loop_beats: float) -> float:
         """Send `commands`, a drop, to reach FUSER on the next of its disc's pickups, the
@@ -457,12 +490,78 @@ class Player:
         from FUSER's sync beat, so a pickup p falls on each clock beat that is p past it,
         wrapped at the loop's length. Returns the clock beat it was aimed at."""
         beat, per_second, trip = self._clock()
-        reach = beat + trip * per_second + PICKUP_LEAD_BEATS
-        place = (reach - self._sync_beat) % loop_beats
-        ahead = min((p - place) % loop_beats for p in pickups)
-        target = reach + ahead
+        target = self._next_pickup(beat, per_second, trip, pickups, loop_beats)
         self._send_at(commands, target, beat, per_second, trip, PICKUP_ARRIVE_SECONDS)
         return target
+
+    def _next_pickup(self, beat, per_second, trip, pickups, loop_beats) -> float:
+        reach = beat + trip * per_second + PICKUP_LEAD_BEATS
+        place = (reach - self._sync_beat) % loop_beats
+        return reach + min((p - place) % loop_beats for p in pickups)
+
+    def _mix_pickup(self, commands, pickups, loop_beats, stop) -> None:
+        # Its own thread: a pickup can be many bars off, and the mix's other steps do not wait
+        try:
+            beat, per_second, trip = self._clock()
+            target = self._next_pickup(beat, per_second, trip, pickups, loop_beats)
+            if self._until(target, stop):
+                self._send(commands)
+        except GameError as e:
+            self._update(error=str(e))
+
+    def _play_bar(self, commands, stop) -> None:
+        """One bar of a mix: what FUSER can take goes out in one request, and the rest
+        starts beside the bar clock."""
+        batch = []
+        for op, args in commands:
+            if op in JOBS:
+                continue
+            if op == "drop":
+                with self._lock:
+                    real = self._named.get(args["name"], args["name"])
+                if args["name"] in self._awaited and real == args["name"]:
+                    # Its recording failed, which get_state reports. The mix goes on without it
+                    self._update(error=f"{real} was not recorded, so it was not dropped")
+                    continue
+                args = {**args, "name": real}
+            batch.append((op, args))
+        self._send(batch)
+        for op, args in commands:
+            if op == "fade":
+                self.fade(args["deck"], args["start"], args["to"], args["beats"])
+            elif op == "pickup":
+                threading.Thread(target=self._mix_pickup, daemon=True, args=(
+                    args["commands"], args["pickups"], args["loop_beats"], stop)).start()
+            elif op in ("perform", "record"):
+                when = self._bar_beat(args["start_bar"])
+                if op == "perform":
+                    self.perform(args["instrument"], args["bars"], when)
+                else:
+                    self._awaited.add(args["name"])
+                    self.record(args["instrument"], args["queue"], when, args["name"], args["deck"])
+                self._mix_performs = True
+
+    def _bar_beat(self, bar):
+        # Asked as the instrument starts and not now: bar 0 can still move with the clock
+        def when():
+            with self._lock:
+                return self._status["started_beat"] + bar * BEATS_PER_BAR
+        return when
+
+    def _reset_decks(self) -> None:
+        """Put back what an earlier mix or tool left on the decks, since the plan was checked
+        with every deck at full and heard."""
+        with self._lock:
+            muted, soloed, faded = set(self._muted), set(self._soloed), set(self._faded)
+            self._muted.clear()
+            self._soloed.clear()
+        self.stop_fades()
+        for deck in muted:
+            self.bridge.call("mute", deck=deck, on=False)
+        for deck in soloed:
+            self.bridge.call("solo", deck=deck, on=False)
+        for deck in faded:
+            self.bridge.call("gain", deck=deck, gain=1)
 
     def _send_at(self, commands, target, beat, per_second, trip,
                  arrive=None) -> None:
@@ -477,6 +576,7 @@ class Player:
 
     def _run(self, schedule, end_bar, opening_decks, stop) -> None:
         try:
+            self._reset_decks()
             state = self.bridge.call("state")
             playing = [d for d, held in enumerate(state["decks"]) if held and held.get("playing")]
             for deck in playing:
@@ -495,13 +595,13 @@ class Player:
                 # Nothing to keep in phase with, so bar 0 goes out at once and starts the
                 # music where the clock stands
                 start = math.ceil(beat / BEATS_PER_BAR) * BEATS_PER_BAR
-                if pending and pending[0][0] == 0:
-                    self._send(pending.pop(0)[1])
             else:
                 # Bar 0 waits for a downbeat like any other, so it lands in phase with what
                 # is playing: the first one a command sent now can still reach
                 start = _next_downbeat(beat, per_second, trip)
             self._update(bar=0, started_beat=start)
+            if not playing and pending and pending[0][0] == 0:
+                self._play_bar(pending.pop(0)[1], stop)
 
             last = beat
             while not stop.is_set():
@@ -522,7 +622,7 @@ class Player:
                     if wait < SETTLE_SECONDS:
                         if wait > 0 and stop.wait(wait):
                             break
-                        self._send(pending.pop(0)[1])
+                        self._play_bar(pending.pop(0)[1], stop)
                         continue
                 elif bar >= end_bar:
                     break
@@ -548,6 +648,10 @@ class Player:
             for op, args in commands:
                 if op == "mute":
                     (self._muted.add if args.get("on") else self._muted.discard)(args["deck"])
+                elif op == "solo":
+                    (self._soloed.add if args.get("on") else self._soloed.discard)(args["deck"])
+                elif op == "riser":
+                    self._riser_ends = time.monotonic() + RISER_HOLD_SECONDS
         self.bridge.call("batch", commands=[{"op": op, "args": args} for op, args in commands])
         if self.on_send:
             self.on_send(commands)
@@ -704,7 +808,7 @@ def _wait(downbeat: float, beat: float, per_second: float, trip: float,
 def _unchanged(command, state: dict, held: list) -> bool:
     op, args = command
     if op == "drop":
-        return held[args["deck"]] == args["name"]
+        return not args.get("queue") and held[args["deck"]] == args["name"]
     if op == "set_key":
         return (state.get("key"), state.get("mode")) == (args["key"], args["mode"])
     if op == "set_tempo":

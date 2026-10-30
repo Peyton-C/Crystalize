@@ -677,3 +677,122 @@ def test_a_deck_faded_back_to_full_needs_nothing_on_a_drop():
     wait_until(lambda: gains(fuser)[-1:] == [1])
     p._send([("drop", {"deck": 2, "name": "x"})])
     assert fuser.requests[-1] == ["drop"]
+
+
+# ------------------------------------------------------- a plan's long-running steps
+
+def bar_0(fuser, p, schedule, end=8):
+    p.start("test", [(0, [("drop", {"name": "abt", "deck": 0, "queue": False})])] + schedule,
+            end, {0})
+    wait_until(lambda: fuser.sent)
+
+
+def test_a_fade_takes_its_time_however_slow_the_round_trip():
+    class Slow(ClockBridge):
+        def call(self, op, **args):
+            if op == "gain":
+                time.sleep(0.02)
+            return super().call(op, **args)
+    fuser = Slow(beat=0.0)
+    p = Player(fuser)
+    began = time.monotonic()
+    p.fade(0, 1, 0, 1)  # 4 steps a beat at 120 BPM, 0.125 seconds each
+    wait_until(lambda: [a["gain"] for _, op, a in fuser.sent if op == "gain"][-1:] == [0])
+    assert time.monotonic() - began < 0.375 + 0.05  # 4 sleeps' worth of trips would pass this
+
+
+def test_a_mix_starts_a_fade_on_its_bar(monkeypatch):
+    fuser = ClockBridge(beat=0.0)
+    p = Player(fuser)
+    bar_0(fuser, p, [(1, [("fade", {"deck": 0, "start": 1, "to": 0, "beats": 1})])])
+    assert not any(op == "gain" for _, op, _ in fuser.sent)
+    fuser.to(4.0)
+    wait_until(lambda: [a["gain"] for _, op, a in fuser.sent if op == "gain"][-1:] == [0])
+    p.stop()
+
+
+def test_a_mix_sends_cues_and_riser_together_and_holds_keep_alive():
+    fuser = ClockBridge(beat=0.0)
+    p = Player(fuser)
+    bar_0(fuser, p, [(1, [("drop", {"name": "c", "deck": 1, "queue": True}), ("riser", {"mode": 1})])])
+    fuser.to(4.0)
+    wait_until(lambda: ["drop", "riser"] in fuser.requests)
+    assert p._riser_ends > time.monotonic()
+    p.stop()
+
+
+def test_a_mix_starts_a_performance_on_the_bar_it_names(monkeypatch):
+    fuser = InstrumentBridge(beat=0.0)
+    p = Player(fuser)
+    bar_0(fuser, p, [(1, [("perform", {"instrument": "Banjo", "start_bar": 3, "bars": 1})])])
+    fuser.to(4.0)
+    wait_until(lambda: any(op == "perform_begin" for _, op, _ in fuser.sent))
+    fuser.to(11.0)
+    time.sleep(0.02)
+    assert not any(op == "perform_press" for _, op, _ in fuser.sent)
+    fuser.to(12.0)
+    wait_until(lambda: any(op == "perform_press" for _, op, _ in fuser.sent))
+    press = next(s for s in fuser.sent if s[1] == "perform_press")
+    assert press[0] == 12.0
+    p.stop()  # the mix's performance goes with it
+    wait_until(lambda: any(op == "perform_end" for _, op, _ in fuser.sent))
+
+
+def test_stopping_a_mix_leaves_a_performance_of_the_agents_own():
+    fuser = InstrumentBridge(beat=2.0)
+    p = Player(fuser)
+    p.perform("Banjo", 1)
+    wait_until(lambda: any(op == "perform_begin" for _, op, _ in fuser.sent))
+    p.stop()
+    assert p.perform_status()["on"]
+    p.stop_perform()
+
+
+def test_a_mix_drops_its_recording_by_the_name_fuser_gave_it():
+    fuser = ClockBridge(beat=0.0)
+    p = Player(fuser)
+    p._named["mine"] = "CraftedInstrument_Bass_1"
+    p._awaited.add("mine")
+    p._play_bar([("drop", {"name": "mine", "deck": 3, "queue": False})], threading.Event())
+    assert fuser.sent[-1][2]["name"] == "CraftedInstrument_Bass_1"
+
+
+def test_a_recording_that_failed_is_skipped_and_reported():
+    fuser = ClockBridge(beat=0.0)
+    p = Player(fuser)
+    p._awaited.add("mine")
+    p._play_bar([("drop", {"name": "mine", "deck": 3, "queue": False}),
+                 ("mute", {"deck": 0, "on": True})], threading.Event())
+    assert [op for _, op, _ in fuser.sent] == ["mute"]
+    assert "mine was not recorded" in p.status()["error"]
+
+
+def test_a_mix_lands_a_pickup_without_holding_up_its_bars(monkeypatch):
+    fuser = ClockBridge(beat=0.0)
+    p = Player(fuser)
+    bar_0(fuser, p, [(1, [("pickup", {"commands": [("drop_queue", {})], "pickups": [40.0],
+                                      "loop_beats": 128.0})]),
+                     (2, [("eject", {"deck": 0})])])
+    fuser.to(4.0)
+    time.sleep(0.02)
+    fuser.to(8.0)
+    wait_until(lambda: any(op == "eject" for _, op, _ in fuser.sent))
+    assert not any(op == "drop_queue" for _, op, _ in fuser.sent)
+    fuser.to(40.0)
+    wait_until(lambda: any(op == "drop_queue" for _, op, _ in fuser.sent))
+    p.stop()
+
+
+def test_a_new_mix_puts_back_what_the_last_left():
+    fuser = ClockBridge(beat=0.0)
+    p = Player(fuser)
+    p._muted.add(2)
+    p._soloed.add(1)
+    p._faded.add(3)
+    p.start("test", SCHEDULE, 6, {0})
+    wait_until(lambda: any(op == "drop" for _, op, _ in fuser.sent))
+    sent = {(op, tuple(sorted(a.items()))) for _, op, a in fuser.sent}
+    assert ("mute", (("deck", 2), ("on", False))) in sent
+    assert ("solo", (("deck", 1), ("on", False))) in sent
+    assert ("gain", (("deck", 3), ("gain", 1))) in sent
+    p.stop()
