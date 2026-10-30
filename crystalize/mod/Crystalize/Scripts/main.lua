@@ -312,6 +312,13 @@ function ops.drop_queue()
     return {}
 end
 
+-- What the hot swap key does: the disc cued on a deck replaces the one playing there.
+-- Swap goals count this, and not the same change made by a drop or drop_queue
+function ops.hot_swap(args)
+    first("DeskState"):HotSwapOnDeck(checkDeck(args.deck))
+    return { deck = args.deck }
+end
+
 function ops.set_key(args)
     local controller = first("AudioController")
     controller:NetSetKeyMode(args.mode)
@@ -420,6 +427,102 @@ function ops.perform_end(args)
     local slot = checkSlot(args.slot)
     first("InstrumentCraftingState"):NetEndCrafting(slot)
     return { slot = slot }
+end
+
+------------------------------------------------------------------------------- effects
+
+-- An effect is switched as the deck's FX panel switches it, without the panel:
+-- AudioEffectState holds a slot for each deck and one for the master, each loaded with an
+-- effect and turned on and off. A Use FX goal counts the effect turned on over a deck
+-- holding the disc it wants. Slots 0 to 2 are FUSER's own, and its tricks ignore them.
+
+-- EAudioEffectSlot: Deck0Slot, then a slot a deck, then MasterSlot, which covers all four
+local DECK0_SLOT, MASTER_SLOT = 3, 7
+
+local function effectEntry(fx)
+    return { name = fx.EffectShortName:ToString(), title = text(fx.EffectName) }
+end
+
+-- Every effect FUSER has, the set's own or not: like discs, any of them counts. The
+-- transition effect, which no deck can hold, hides from the UI and from this
+function ops.effects()
+    local out = array()
+    for _, fx in ipairs(FindAllOf("AudioEffectData") or {}) do
+        if valid(fx) and not fx.HideFromUI then
+            out[#out + 1] = effectEntry(fx)
+        end
+    end
+    return out
+end
+
+local function findEffect(name)
+    for _, fx in ipairs(FindAllOf("AudioEffectData") or {}) do
+        if valid(fx) and fx.EffectShortName:ToString() == name then
+            return fx
+        end
+    end
+    error("no effect named " .. tostring(name), 0)
+end
+
+-- A deck's slot, or the master's for no deck
+local function effectSlot(deck)
+    if deck == nil or deck == NULL then
+        return MASTER_SLOT
+    end
+    return DECK0_SLOT + checkDeck(deck)
+end
+
+-- The effect a slot holds, or nil. Read from the slot's FAudioEffectInfo, since
+-- TryGetEffectData hands back nothing UE4SS can read
+local function slotEffect(state, slot)
+    local found
+    state._slotEffectInfo:ForEach(function(i, info)
+        if i == slot + 1 then
+            local fx = info:get().effectData
+            found = valid(fx) and fx or nil
+        end
+    end)
+    return found
+end
+
+-- Each deck's effect and the master's, in that order, or null for an empty slot
+function ops.fx_state()
+    local state = first("AudioEffectState")
+    local out = array()
+    for slot = DECK0_SLOT, MASTER_SLOT do
+        local fx = slotEffect(state, slot)
+        if fx then
+            local entry = effectEntry(fx)
+            entry.on = state:GetIsEnabled(slot) == true
+            out[#out + 1] = entry
+        else
+            out[#out + 1] = NULL
+        end
+    end
+    return out
+end
+
+-- Loads an effect into a deck's slot, or the master's, if it holds another, and turns it
+-- on or off. Without a name, the slot keeps the one it has. FUSER grades the switch by when
+-- it arrives, as it does a drop. Code that waits for the downbeat on the game thread gets
+-- Bad every time, since the game judges it by a clock that stood still while it waited
+function ops.fx(args)
+    local state = first("AudioEffectState")
+    local slot = effectSlot(args.deck)
+    local fx = slotEffect(state, slot)
+    -- By name, since UE4SS can hand the same object back as two userdata that differ
+    if args.name ~= nil and args.name ~= NULL
+            and not (fx and fx.EffectShortName:ToString() == args.name) then
+        fx = findEffect(args.name)
+        state:NetSetAddEffectToSlot(slot, fx)
+    end
+    if not fx then
+        error("that slot holds no effect; name one", 0)
+    end
+    state:NetSetEffectEnabled(slot, args.on == true)
+    local entry = effectEntry(fx)
+    entry.on = args.on == true
+    return entry
 end
 
 ------------------------------------------------------------------------------- launching
@@ -700,6 +803,27 @@ local function goals(featured)
                     local ok_i, inst = pcall(function() return data:GetCustomInstrument() end)
                     entry.custom_instrument = ok_i and text(inst) or NULL
                 end
+                -- The effect a Use FX goal names as {Effect}. The goal's copy of its data
+                -- holds the effect itself, where GetAudioEffect gives only its title
+                if data.UseFeaturedEffect then
+                    local ok_e, fx = pcall(function() return effectEntry(data.RequiredAudioEffect) end)
+                    entry.effect = ok_e and fx or NULL
+                end
+                -- The tempo a Stay in a tempo goal names as {AbsTempo}. Only stat goals
+                -- have the field, and a goal not about tempo holds 0
+                local ok_t, tempo = pcall(function() return data.TempoRequirement end)
+                if ok_t and math.type(tempo) == "integer" and tempo > 0 then
+                    entry.tempo = tempo
+                end
+                -- The key and the mode a key goal names as {MusicalKey} and {MusicalMode},
+                -- as FUSER writes them, "C" and "Minor". Its fields hold enums whose none
+                -- differs between goals, and these give empty text for a goal not about key
+                for field, method in pairs({ key = "GetKey", mode = "GetMode" }) do
+                    local ok_k, words = pcall(function() return text(data[method](data)) end)
+                    if ok_k and type(words) == "string" and words ~= "" then
+                        entry[field] = words
+                    end
+                end
             end
             out[#out + 1] = entry
         end
@@ -736,6 +860,16 @@ function ops.set_state()
         for _, inst in ipairs(items(first("ShowFlowMgr")._curPrompt.FeaturedInstruments)) do
             if valid(inst) then
                 out[#out + 1] = instrumentEntry(inst)
+            end
+        end
+        return out
+    end)
+    -- The effects the set features, which its Use FX goals name
+    try("effects", function()
+        local out = array()
+        for _, fx in ipairs(items(first("ShowFlowMgr")._curPrompt.FeaturedEffects)) do
+            if valid(fx) then
+                out[#out + 1] = effectEntry(fx)
             end
         end
         return out

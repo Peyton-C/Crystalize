@@ -35,7 +35,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 ## Tools
 | Tool | What |
 | --- | --- |
-| `get_state` | The key, the tempo, the tempo range FUSER allows, each deck's playing and queued disc, and the mix playing, with the bar it is on |
+| `get_state` | The key, the tempo, the tempo range FUSER allows, each deck's playing and queued disc and its effect, and the mix playing, with the bar it is on |
 | `get_set` | In a campaign set, the open crowd requests, the goals not yet done, the crowd meter and the score, see Campaign |
 | `await_event` | In a campaign set, waits until a request, goal or the meter changes and says what, see Campaign |
 | `search_songs` | Songs whose title or artist has every word of `query`, narrowed by `genre`, `key`, `bpm_min`, `bpm_max`, `year_min`, `year_max`, `instrument`, `disc_type`, `energy_min`, `energy_max`, `untagged` and `near`, a page at a time. Each lists its tags and its discs by name |
@@ -46,6 +46,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `stop_mix` | Stops the mix. The decks keep playing what they have |
 | `keep_alive` | Swaps discs from a list now and then, so a campaign set's crowd meter does not drain while the agent thinks |
 | `perform` | Plays an instrument over the mix for a number of bars, see Campaign |
+| `use_fx` | Turns an effect on or off over a deck, or over all four, see Campaign |
 | `go_to` | Takes FUSER to a campaign set, freestyle or the main menu without its menus, see Launching |
 | `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck`, `take_snapshot` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar. A snapshot is kept in the player's profile, as one taken with the key is. A disc dropped on a deck Crystalize muted unmutes it on the same downbeat, since FUSER rewards nothing dropped on a muted deck |
 
@@ -120,7 +121,11 @@ Freshness, the mix's newness, rises when a disc is played, a mute changes or the
 
 `drop_disc` with `on_pickup` lands a disc on its next pickup, where a vocal or a fill comes in ahead of the bar, for goals that ask for a drop on a pickup. Crystalize queues the disc, so it is loaded, then drops it just after the pickup, and says which beat of the disc's loop it aimed at. Some older custom songs have no pickups, and `drop_disc` refuses those.
 
+`drop_disc` with `swap` is FUSER's hot swap: Crystalize cues the disc on the deck at once, then swaps it in for the one playing there on the next downbeat, or on the disc's pickup with `on_pickup`. Swap goals, written with a {Hotswap} icon, count only this. A plain drop or `drop_queue` makes the same change and does not count for them. "Cue a disc" is `drop_disc` with `queue`.
+
 `perform` plays an instrument for "Perform on {CustomInstrument} Instrument" and "Perform on any Instrument" goals, which count one-bar performances. Crystalize loads the instrument, presses a pad on each downbeat from the next and lets go just before the bar ends, then unloads it after the last bar. Without `instrument` it plays the one the set features; with one, it takes a name or title of any instrument FUSER has. It returns at once, `get_state` shows how many bars it has `played`, and `stop` lets go early. Sections with a Perform goal loop until it is done, so an agent that cannot perform stalls there. Wait about 3 measures after the goal starts, as for any goal, and ask for as many bars as it still needs.
+
+`use_fx` switches an effect for "Use {FX} {Effect} on a ..." and "Use any {FX} Effect" goals, which count each time the effect goes on over a deck holding the disc they want. Each deck has a slot for one effect and the master has one over all four. Crystalize loads the effect into the slot if it holds another, then turns it on or off on the next downbeat. Without `fx` it keeps the slot's effect, or loads the one the set features into an empty slot; with one, it takes a name or title of any effect FUSER has. Turn it off a bar later and on again for the next count. "Drop a lead on Sync Delay" is the effect turned on over the deck, then a drop there, and a Swap goal on an effect is the same with `drop_disc` and `swap`. Timed this way a switch grades perfect, as a drop does. A show break's dialog stops goals counting until it is closed, and Crystalize cannot close it. Sets reached with `go_to` skip the loadout screen, so the slots start empty.
 
 `get_set` reports the set as FUSER keeps it:
 
@@ -150,7 +155,7 @@ Freshness, the mix's newness, rises when a disc is played, a mute changes or the
 
 The meter drains about 1 a second once 6 seconds pass without an action, and a good action adds 3. A bad one takes 4, and so do a missed request and a missed goal. FUSER remembers the last 3 discs and counts more than 3 actions in 6 bars as too much, so keep it fed with one fresh disc every few bars rather than many at once.
 
-A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "{Transition} Smart Riser". Disc types, instruments, genres and the song a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)", "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah by The Clash" and "Include 2+ {Genre} discs" reads "Include 2+ Rock discs".
+A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "{Transition} Smart Riser". Disc types, instruments, genres, tempos, keys, modes and the song, instrument and effect a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)", "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah by The Clash" and "Include 2+ {Genre} discs" reads "Include 2+ Rock discs".
 
 `await_event` waits for the set to change, so the agent does not spend its turns polling `get_set`. It returns the events and `get_set`'s view together. Crystalize compares each read with the last one the agent saw through either tool, so anything that happened while the agent was busy comes back at once. Otherwise it waits up to `seconds`, 20 by default and at most 60.
 

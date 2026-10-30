@@ -285,6 +285,10 @@ TOOLS = [
             "type": "object",
             "properties": {"disc": {"type": "string", "description": "A disc name"},
                            "deck": DECK, "queue": {"type": "boolean"},
+                           "swap": {"type": "boolean",
+                                    "description": "Cue it and hot swap it in, as FUSER's "
+                                                   "hot swap key does, which Swap goals "
+                                                   "count and a plain drop does not"},
                            "on_pickup": {"type": "boolean",
                                          "description": "Land on the disc's next pickup, "
                                                         "where it comes in ahead of the bar, "
@@ -320,6 +324,21 @@ TOOLS = [
             "bars": {"type": "integer", "minimum": 1, "maximum": PERFORM_BARS},
             "instrument": {"type": "string"},
             "stop": {"type": "boolean"},
+        }},
+    },
+    {
+        "name": "use_fx",
+        "description": "Turn an effect on or off over a deck, or over all four without `deck`, "
+                       "on the next downbeat, as FUSER's FX panel does, which grades perfect. A "
+                       "Use FX goal counts each time the effect goes on over a deck holding "
+                       "the disc it wants. "
+                       "Without `fx`, the effect the deck already has, else the one the set "
+                       "features; else a name or title of any FUSER has. get_state shows "
+                       "each deck's.",
+        "inputSchema": {"type": "object", "properties": {
+            "deck": DECK,
+            "fx": {"type": "string"},
+            "on": {"type": "boolean", "description": "Default true"},
         }},
     },
     {
@@ -467,7 +486,13 @@ PROMPTS = [
             "check get_state first. Mute a beat, a loop or a song's disc means mute_deck; unmute "
             "it after unless the goal wants it silent. Take a Snapshot means take_snapshot. A "
             "Perform goal counts each bar an instrument plays: perform with bars as many as "
-            "it still needs. Its section waits until it is done.\n"
+            "it still needs. Its section waits until it is done. A Use FX goal counts the "
+            "effect turned on over a deck holding the disc it wants: use_fx on that deck, "
+            "then off again a bar later, and on again for the next count. On 4 discs at once "
+            "means use_fx without deck, with four discs playing. Drop or Swap on an effect "
+            "means use_fx on the deck first, then drop_disc there. A Swap goal ({Hotswap}) "
+            "takes drop_disc with swap onto a deck already playing that kind of disc; a "
+            "plain drop does not count for it. Cue a disc means drop_disc with queue.\n"
             "4. A request names a genre, an instrument, a decade or a song. search_songs finds "
             "the disc with genre, instrument, disc_type, year_min and year_max, or query. A "
             "song is named with its artist, and two songs can share a title, so query both. When "
@@ -681,14 +706,24 @@ class Server:
 
     def _tool_get_state(self, args: dict) -> dict:
         state = self.bridge.call("state")
+        try:
+            # Each deck's slot, then the master's; outside a session there are none
+            effects = self.bridge.call("fx_state")
+        except GameError:
+            effects = []
         decks = []
         for i, deck in enumerate(state["decks"]):
             deck = deck or {}
-            decks.append({"deck": i + 1, "playing": self._describe(deck.get("playing")),
-                          "queued": self._describe(deck.get("queued"))})
+            entry = {"deck": i + 1, "playing": self._describe(deck.get("playing")),
+                     "queued": self._describe(deck.get("queued"))}
+            if i < len(effects) and effects[i]:
+                entry["fx"] = _fx(effects[i])
+            decks.append(entry)
         self._bpm_range = [state["bpm_min"], state["bpm_max"]]
         result = {"key": music.key_name(state["key"], state["mode"]), "bpm": state["bpm"],
                   "bpm_range": self._bpm_range, "decks": decks}
+        if len(effects) > 4 and effects[4]:
+            result["master_fx"] = _fx(effects[4])
         mix = self.player.status()
         if mix:
             result["mix"] = {k: v for k, v in mix.items() if k != "started_beat" and v is not None}
@@ -852,7 +887,9 @@ class Server:
     @staticmethod
     def _goal_text(g: dict, titles: dict) -> str | None:
         return music.goal_text(g.get("name"), titles.get(g.get("song"), g.get("song")),
-                               g.get("filters"), g.get("custom_instrument")) \
+                               g.get("filters"), g.get("custom_instrument"),
+                               (g.get("effect") or {}).get("title"), g.get("tempo"),
+                               g.get("key"), g.get("mode")) \
             or g.get("description")
 
     def _set_view(self, raw: dict) -> dict:
@@ -1142,6 +1179,8 @@ class Server:
                             f"play silence. search_songs lists only songs you own")
         try:
             drop = {"name": disc, "deck": _deck(args), "queue": bool(args.get("queue"))}
+            # A swap is cued at once, so the disc is loaded by the time it swaps in
+            swap = [("hot_swap", {"deck": drop["deck"]})] if args.get("swap") else None
             if drop["queue"]:
                 self.bridge.call("drop", **drop)
             elif args.get("on_pickup"):
@@ -1154,8 +1193,11 @@ class Server:
                 # as one in the player's hand is: spawned at the pickup itself, FUSER can
                 # only bring it in at the next bar
                 self.bridge.call("drop", **{**drop, "queue": True})
-                target = self.player.on_pickup([("drop_queue", {})], pickups, loop)
+                target = self.player.on_pickup(swap or [("drop_queue", {})], pickups, loop)
                 aimed = round(target % loop, 2)
+            elif swap:
+                self.bridge.call("drop", **{**drop, "queue": True})
+                self.player.on_downbeat(swap)
             else:
                 # Timed as play_mix times its bars, so the campaign counts it on the downbeat
                 self.player.on_downbeat([("drop", drop)])
@@ -1165,6 +1207,8 @@ class Server:
             raise
         result = {"deck": args["deck"], "disc": self._describe(disc),
                   "queued": bool(args.get("queue"))}
+        if swap and not drop["queue"]:
+            result["swapped"] = True
         if args.get("on_pickup") and not args.get("queue"):
             # The beat in the disc's loop it was aimed at, to tell one pickup from another
             result["pickup_beat"] = aimed
@@ -1215,6 +1259,40 @@ class Server:
         if not everything:
             raise GameError("FUSER has no instruments loaded; open a set or freestyle first")
         return everything[0]
+
+    def _tool_use_fx(self, args: dict) -> dict:
+        deck = _deck(args) if args.get("deck") is not None else None
+        on = args.get("on") is not False
+        fx = self._effect(args.get("fx"), deck)
+        # On the downbeat, as a drop is: FUSER grades the switch as it grades a drop, and a
+        # Use FX goal pays perfect timing for one sent this way
+        self.player.on_downbeat([("fx", {"deck": deck, "name": fx and fx["name"], "on": on})])
+        return {"deck": args["deck"] if deck is not None else "all",
+                "fx": _fx(fx)["name"] if fx else "the slot's own", "on": on}
+
+    def _effect(self, asked: str | None, deck: int | None) -> dict | None:
+        """The effect asked for, by name or title; or None, for the one the slot already
+        holds; or failing that, the set's first featured one."""
+        if asked:
+            everything = self.bridge.call("effects")
+            want = asked.casefold()
+            found = next((e for e in everything if e["name"].casefold() == want
+                          or str(e.get("title") or "").casefold() == want), None)
+            if found is None:
+                raise ValueError(f"FUSER has no effect {asked}; it has "
+                                 + ", ".join(str(e.get("title") or e["name"]) for e in everything))
+            return found
+        slots = self.bridge.call("fx_state")
+        if slots[4 if deck is None else deck]:
+            return None
+        try:
+            featured = self.bridge.call("set_state").get("effects") or []
+        except GameError:
+            featured = []
+        if not featured:
+            raise ValueError("this slot holds no effect and the set features none; name one "
+                             "with fx")
+        return featured[0]
 
     def _tool_set_key(self, args: dict) -> dict:
         key, mode = music.parse_key(str(args["key"]))
@@ -1267,6 +1345,14 @@ def _meter(raw: dict) -> int | None:
     if isinstance(health, (int, float)) and isinstance(most, (int, float)) and most > 0:
         return round(health / most * 100)
     return None
+
+
+def _fx(entry: dict) -> dict:
+    """An effect as the agent sees it: its title, which goals use, and whether it is on."""
+    out = {"name": entry.get("title") or entry["name"]}
+    if "on" in entry:
+        out["on"] = entry["on"]
+    return out
 
 
 def _near(a: dict, b: dict) -> bool:

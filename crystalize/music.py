@@ -44,7 +44,9 @@ GOAL_PLACEHOLDERS = {"{btType}": "beat (blue)", "{bsType}": "bass (green)",
                      "{lpType}": "loop (yellow)", "{ldType}": "lead (red)"}
 DISC_TYPE_WORDS = {"bt": "beat (blue)", "bs": "bass (green)", "lp": "loop (yellow)",
                    "ld": "lead (red)"}
-_ONLY_TYPE = re.compile(r"Include only (\d+) \{(bt|bs|lp|ld)Type\}")
+# Not when another type follows, as in "Include only 1 {btType} & 1 {bsType}", which reads
+# right as it is
+_ONLY_TYPE = re.compile(r"Include only (\d+) \{(bt|bs|lp|ld)Type\}(?! &)")
 # A disc type and an instrument, as in {lpGuitar}: a guitar loop
 _TYPED_INSTRUMENT = re.compile(r"\{(bt|bs|lp|ld)([A-Z]\w*)\}")
 
@@ -211,10 +213,13 @@ def request_wants(f: dict | None, titles: dict | None = None) -> str | None:
 
 
 def goal_text(name: str | None, song: str | None = None,
-              filters: list[dict] | None = None, instrument: str | None = None) -> str | None:
+              filters: list[dict] | None = None, instrument: str | None = None,
+              effect: str | None = None, tempo: int | None = None,
+              key: str | None = None, mode: str | None = None) -> str | None:
     """A goal's name with the placeholders filled that can be, `song` being the title of
-    the song it features, `filters` the FCelFilters it counts discs by and `instrument`
-    the title of the instrument it features."""
+    the song it features, `filters` the FCelFilters it counts discs by, `instrument` and
+    `effect` the titles of the instrument and effect it features, `tempo` the BPM it
+    asks the mix to stay at, and `key` and `mode` the key and mode, as FUSER writes them."""
     if not name:
         return name
     # "Include only 1 {btType}" means one disc in all, a beat, not one beat among others,
@@ -236,4 +241,13 @@ def goal_text(name: str | None, song: str | None = None,
         name = name.replace("{RequiredSong}", song)
     if instrument:
         name = name.replace("{CustomInstrument}", instrument)
-    return name
+    if effect:
+        name = name.replace("{Effect}", effect)
+    if tempo:
+        name = name.replace("{AbsTempo}", str(tempo))
+    if key:
+        name = name.replace("{MusicalKey}", key)
+    if mode:
+        name = name.replace("{MusicalMode}", mode.lower())
+    # {FX} is an icon on screen, beside the effect's name or the word Effect
+    return name.replace("{FX} ", "")

@@ -349,6 +349,14 @@ def test_queue_goes_at_once(talk, fake):
     assert fake.calls[-1] == ("drop", {"name": "mrbrightsidebs", "deck": 3, "queue": True})
 
 
+def test_swap_cues_at_once_then_hot_swaps_on_the_downbeat(talk, fake):
+    result, failed = call(talk, "drop_disc", disc="mrbrightsidebs", deck=4, swap=True)
+    assert not failed and result["swapped"] is True
+    assert fake.calls[-4:] == [
+        ("drop", {"name": "mrbrightsidebs", "deck": 3, "queue": True}),
+        ("state", {}), ("clock", {}), ("hot_swap", {"deck": 3})]
+
+
 def test_drop_queue_waits_for_the_downbeat(talk, fake):
     _, failed = call(talk, "drop_queue")
     assert not failed and fake.ops() == ["state", "clock", "drop_queue"]
@@ -638,6 +646,8 @@ def test_goal_text_says_only_means_the_whole_mix():
     assert music.goal_text("Include only 1 {btType}") == "Include only 1 disc, a beat (blue)"
     assert music.goal_text("Include only 2 {lpType}") == "Include only 2 discs, all loop (yellow)"
     assert music.goal_text("Include only 3 discs") == "Include only 3 discs"
+    assert music.goal_text("Include only 1 {btType} & 1 {bsType}") == \
+        "Include only 1 beat (blue) & 1 bass (green)"
 
 
 def test_play_set_prompt_needs_no_arguments(talk):
@@ -781,3 +791,77 @@ def test_goal_text_fills_the_featured_instrument():
     from crystalize import music
     assert music.goal_text("Perform on {CustomInstrument} Instrument", None, None,
                            "Electro Funk Drums") == "Perform on Electro Funk Drums Instrument"
+
+
+EFFECTS = [{"name": "Filter_01", "title": "Low-Pass Filter"},
+           {"name": "Flanger_01", "title": "Flanger"}]
+
+
+@pytest.fixture
+def effects(fake, monkeypatch):
+    """A set featuring the Low-Pass Filter, its slots empty but deck 2's, which holds the
+    Flanger, switched on; and the commands sent on a downbeat."""
+    from crystalize.player import Player
+    sent = []
+    monkeypatch.setattr(Player, "on_downbeat", lambda self, commands: sent.extend(commands))
+    real = fake.call
+
+    def call(op, **args):
+        if op == "effects":
+            return copy.deepcopy(EFFECTS)
+        if op == "fx_state":
+            return [None, {**EFFECTS[1], "on": True}, None, None, None]
+        if op == "set_state":
+            return {**real(op, **args), "effects": [EFFECTS[0]]}
+        return real(op, **args)
+    fake.call = call
+    return sent
+
+
+def test_use_fx_loads_the_featured_effect_into_an_empty_slot(talk, effects):
+    result, failed = call(talk, "use_fx", deck=1)
+    assert not failed and result == {"deck": 1, "fx": "Low-Pass Filter", "on": True}
+    assert effects == [("fx", {"deck": 0, "name": "Filter_01", "on": True})]
+
+
+def test_use_fx_keeps_the_effect_a_slot_holds(talk, effects):
+    result, _ = call(talk, "use_fx", deck=2, on=False)
+    assert result == {"deck": 2, "fx": "the slot's own", "on": False}
+    assert effects == [("fx", {"deck": 1, "name": None, "on": False})]
+
+
+def test_use_fx_on_the_master_by_title(talk, effects):
+    result, _ = call(talk, "use_fx", fx="flanger")
+    assert result["deck"] == "all"
+    assert effects == [("fx", {"deck": None, "name": "Flanger_01", "on": True})]
+
+
+def test_use_fx_names_the_effects_there_are(talk, effects):
+    text, failed = call(talk, "use_fx", deck=1, fx="Theremin")
+    assert failed and "Low-Pass Filter, Flanger" in text and effects == []
+
+
+def test_get_state_shows_each_decks_effect(talk, effects):
+    result, _ = call(talk, "get_state")
+    assert result["decks"][1]["fx"] == {"name": "Flanger", "on": True}
+    assert "fx" not in result["decks"][0] and "master_fx" not in result
+
+
+def test_goal_text_fills_the_effect_and_the_tempo():
+    from crystalize import music
+    assert music.goal_text("Use {FX} {Effect} on a {ldType} disc", effect="Low-Pass Filter") == \
+        "Use Low-Pass Filter on a lead (red) disc"
+    assert music.goal_text("Use any {FX} Effect") == "Use any Effect"
+    assert music.goal_text("Stay in a tempo of {AbsTempo} BPM", tempo=115) == \
+        "Stay in a tempo of 115 BPM"
+    assert music.goal_text("Stay in the key of {MusicalKey}", key="C") == "Stay in the key of C"
+    assert music.goal_text("Change mode to {MusicalMode}", mode="Major") == "Change mode to major"
+
+
+def test_get_set_names_the_featured_effect(talk, monkeypatch):
+    goal = {"name": "Use {FX} {Effect} on a {btType} disc", "performed": 0, "required": 2,
+            "completed": False, "active": True,
+            "effect": {"name": "Filter_01", "title": "Low-Pass Filter"}}
+    monkeypatch.setitem(SET_STATE, "goals", [goal])
+    result, _ = call(talk, "get_set")
+    assert result["goals"][0]["goal"] == "Use Low-Pass Filter on a beat (blue) disc"

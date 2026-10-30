@@ -103,6 +103,7 @@ def test_key_sets_mode_then_key(ask):
 @pytest.mark.parametrize("op, args, method, expected", [
     ("eject", {"deck": 3}, "EjectTrack", [3, False]),
     ("drop_queue", {}, "DoDropQueue", []),
+    ("hot_swap", {"deck": 3}, "HotSwapOnDeck", [3]),
     ("set_tempo", {"bpm": 128}, "NetSetTempo", [128]),
     ("mute", {"deck": 1, "on": True}, "NetMuteTrack", [1, True]),
     ("solo", {"deck": 0, "on": False}, "NetSoloTrack", [0, False]),
@@ -148,6 +149,44 @@ def test_perform_end_and_a_bad_slot(ask):
     assert not body["ok"] and "slot must be 0 to 3" in body["error"] and calls == []
 
 
+def test_effects_leave_out_the_hidden_transition(ask):
+    body, _ = ask("effects")
+    assert body["result"] == [{"name": "Filter_01", "title": "Low-Pass Filter"},
+                              {"name": "Flanger_01", "title": "Flanger"}]
+
+
+def test_fx_state_gives_each_deck_then_the_master(ask):
+    body, _ = ask("fx_state")
+    assert body["result"] == [None, {"name": "Flanger_01", "title": "Flanger", "on": True},
+                              None, None, None]
+
+
+def test_fx_loads_an_effect_into_a_decks_slot_and_turns_it_on(ask):
+    body, calls = ask("fx", deck=0, name="Filter_01", on=True)
+    assert body["result"] == {"name": "Filter_01", "title": "Low-Pass Filter", "on": True}
+    assert [(c["method"], c["args"]) for c in calls] == [
+        ("NetSetAddEffectToSlot", [3, "Filter_01"]), ("NetSetEffectEnabled", [3, True])]
+
+
+def test_fx_keeps_the_effect_a_slot_holds(ask):
+    _, calls = ask("fx", deck=1, name="Flanger_01", on=False)
+    assert [(c["method"], c["args"]) for c in calls] == [("NetSetEffectEnabled", [4, False])]
+    _, calls = ask("fx", deck=1, on=True)
+    assert [(c["method"], c["args"]) for c in calls] == [("NetSetEffectEnabled", [4, True])]
+
+
+def test_fx_without_a_deck_is_the_master(ask):
+    _, calls = ask("fx", name="Flanger_01", on=True)
+    assert [c["args"][0] for c in calls] == [7, 7]
+
+
+def test_fx_needs_an_effect_for_an_empty_slot(ask):
+    body, calls = ask("fx", deck=2, on=True)
+    assert not body["ok"] and "holds no effect" in body["error"] and calls == []
+    body, calls = ask("fx", deck=2, name="Theremin", on=True)
+    assert not body["ok"] and "no effect named Theremin" in body["error"] and calls == []
+
+
 def test_batch_runs_in_order(ask):
     body, calls = ask("batch", commands=[
         {"op": "drop", "args": {"name": "callmemaybebs", "deck": 1, "queue": False}},
@@ -188,7 +227,7 @@ def test_set_state(ask):
                    "songs": [], "discs": []},
     }
     assert "filter" not in scheduled  # FUSER picks what it wants only when it starts
-    done, open_, perform = state["goals"]
+    done, open_, perform, fx, tempo = state["goals"]
     assert (done["name"], done["completed"], done["active"]) == ("Drop a {btType}", True, False)
     # false, not null: an answer of false must not fall through to the fallback
     assert (open_["completed"], open_["active"], open_["kind"]) == (False, True, "ShowGoalQuota")
@@ -198,6 +237,11 @@ def test_set_state(ask):
     assert perform["custom_instrument"] == "Electro Funk Drums"
     assert "custom_instrument" not in open_
     assert state["instruments"] == [{"name": "DrumCanvas2", "title": "Electro Funk Drums"}]
+    # The effect a Use FX goal features, and the tempo a tempo goal wants, 0 left out
+    assert fx["effect"] == {"name": "Filter_01", "title": "Low-Pass Filter"}
+    assert state["effects"] == [{"name": "Filter_01", "title": "Low-Pass Filter"}]
+    assert tempo["tempo"] == 115 and "tempo" not in done and "effect" not in open_
+    assert tempo["mode"] == "Minor" and "key" not in tempo
     assert [f["genre"] for f in done["filters"]] == [6]  # a stat goal's, from its mix filters
     assert open_["filters"] == [{"type": 2, "disc_type": 0, "instrument": 0, "genre": 8,
                                  "years": 0, "songs": [], "discs": []}]
@@ -220,7 +264,7 @@ def test_set_state_reads_each_part_alone(ask):
     assert body["ok"] and state["requests"] is None
     assert state["problems"] == ["requests: RequestMgr not found, open a freestyle session or "
                                  "a campaign set first"]
-    assert state["freshness"]["value"] == 0.5 and len(state["goals"]) == 3
+    assert state["freshness"]["value"] == 0.5 and len(state["goals"]) == 5
 
 
 def test_read_fields(ask):
@@ -349,4 +393,4 @@ def test_goals_without_featured_songs(ask):
     body, _ = ask("set_state", missing="ShowFlowMgr")
     state = body["result"]
     assert any(p.startswith("featured songs: ") for p in state["problems"])
-    assert len(state["goals"]) == 3 and state["goals"][1]["song"] is None
+    assert len(state["goals"]) == 5 and state["goals"][1]["song"] is None

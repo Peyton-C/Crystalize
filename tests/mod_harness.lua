@@ -90,7 +90,7 @@ end
 local function goal(label, goalName, done, featured)
     return object(label, {
         _myGoalData = object(label .. " data", { GoalName = name(goalName), GoalDescription = name(""),
-            UseFeaturedSong = featured == true, UseFeaturedInstrument = false,
+            UseFeaturedSong = featured == true, UseFeaturedInstrument = false, UseFeaturedEffect = false,
             CelFilters = { Filters = tarrayOf({ { FilterTo = 2, LoopType = 0, instrument = 0, Genre = 8,
                 YearRange = 0, songs = tarrayOf({}), Cels = tarrayOf({}) } }) },
             GetFullName = function()
@@ -113,6 +113,30 @@ local openGoal = goal("GoalBass", "Drop {bsGuitar} from \"{RequiredSong}\"", fal
 local performGoal = goal("GoalPerform", "Perform on {CustomInstrument} Instrument", false)
 performGoal._myGoalData.UseFeaturedInstrument = true
 performGoal._myGoalData.GetCustomInstrument = function() return name("Electro Funk Drums") end
+
+-- A stat goal not about tempo holds 0
+doneGoal._myGoalData.TempoRequirement = 0
+local tempoGoal = goal("GoalTempo", "Stay in a tempo of {AbsTempo} BPM", false)
+tempoGoal._myGoalData.TempoRequirement = 115
+-- FUSER's text for a key goal's key, and empty text for any other
+tempoGoal._myGoalData.GetKey = function() return name("") end
+tempoGoal._myGoalData.GetMode = function() return name("Minor") end
+
+local function effect(short, title, hidden)
+    return object(short, { EffectShortName = name(short), EffectName = name(title), HideFromUI = hidden })
+end
+local lowpass, flanger = effect("Filter_01", "Low-Pass Filter", false), effect("Flanger_01", "Flanger", false)
+local effects = { lowpass, flanger, effect("Transition_01", "Stutter", true) }
+local fxGoal = goal("GoalFx", "Use {FX} {Effect} on a {ldType} disc", false)
+fxGoal._myGoalData.UseFeaturedEffect = true
+fxGoal._myGoalData.RequiredAudioEffect = lowpass
+
+-- FUSER's eight effect slots: three of its own, one a deck, and the master's. Deck 1's
+-- holds the Flanger, switched on
+local slots = {}
+for slot = 0, 7 do
+    slots[#slots + 1] = { effectData = slot == 4 and flanger or INVALID }
+end
 
 local drums = object("DrumCanvas2", { shortName = name("DrumCanvas2"), Title = name("Electro Funk Drums") })
 local instruments = { drums, object("NoInstrument", { shortName = name("None"), Title = name("") }),
@@ -172,7 +196,7 @@ local world = {
           ProceduralRequests = 1, MyRequest = INVALID },
     }) }) },
     ShowGoalsMgr = { object("ShowGoalsMgr", {
-        _allGoalsUsedThisShow = tarrayOf({ doneGoal, openGoal, performGoal }),
+        _allGoalsUsedThisShow = tarrayOf({ doneGoal, openGoal, performGoal, fxGoal, tempoGoal }),
         _currentlyActiveGoals = tarrayOf({ openGoal, performGoal }),
     }) },
     SkillStat_Freshness = { object("Freshness", {
@@ -200,6 +224,7 @@ local world = {
         _curPrompt = object("M_0030", {
             FeaturedSongs = tarrayOf({ song, casbah }),
             FeaturedInstruments = tarrayOf({ drums }),
+            FeaturedEffects = tarrayOf({ lowpass }),
             ShowSections = tarrayOf({
                 { GoalsThisSection = tarrayOf({
                     { ShowGoalData = asset("GoalBeat"), FeaturedSongIndex = 0 },
@@ -242,6 +267,9 @@ local world = {
     AudioController = { object("AudioController") },
     SavedMomentsMgr = { object("SavedMomentsMgr") },
     InstrumentCelData = instruments,
+    AudioEffectData = effects,
+    AudioEffectState = { object("EffectState", { _slotEffectInfo = tarrayOf(slots),
+        GetIsEnabled = function(_, slot) return slot == 4 end }) },
     InstrumentCraftingState = { object("InstrumentCraftingState") },
     InstrumentCraftingMgr = { object("InstrumentCraftingMgr", {
         IsCrafting = function() return true end,
