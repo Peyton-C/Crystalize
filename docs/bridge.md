@@ -2,9 +2,9 @@
 The server and the mod talk through files in the mod's `ipc` folder, `ue4ss/Mods/Crystalize/ipc`. UE4SS's Lua has no sockets, and under Proton a folder is the simplest thing both a Linux process and a Windows game can see.
 
 ## Requests
-The server writes `request.lua`, a Lua table literal holding an id, a command and its arguments. The mod checks for it every 50 ms, deletes it, and loads it with an empty environment, so a request is data and can call nothing. The mod runs the command on FUSER's game thread and writes `response-<id>.json`.
+The server writes `request.lua`, a Lua table literal holding an id, a command and its arguments. On FUSER's game thread, the mod checks for it every 50 ms, deletes it, loads it with an empty environment, so a request is data and can call nothing, runs the command and writes `response-<id>.json`.
 
-One request is in flight at a time. If the mod has not taken a request within a second and a half, the server takes it back and reports that FUSER is not running. Once taken, the answer can wait up to ten seconds, since a loading screen holds up the game thread.
+One request is in flight at a time. A loading screen holds up the game thread, so the server waits up to ten seconds for the mod to take a request, then takes it back and reports that FUSER is not running. Once taken, the answer can wait up to ten seconds more.
 
 Each response carries a session id the mod picks when it loads. A new one tells the server FUSER restarted, and that its copy of the song library may be out of date.
 

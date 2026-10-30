@@ -31,7 +31,7 @@ Around the server: `music.py` holds FUSER's enums and the musical arithmetic, `m
 
 The mod stays thin. It wraps FUSER's functions, reports enums as the numbers the game stores, and numbers decks from 0. Names, keys, deck numbering, grouping discs into songs and anything else that can be decided outside the game belong in Python, in `music.py` or `mcp.py`, where they are easy to test and change without restarting FUSER.
 
-Everything in the mod that touches a game object runs through `ExecuteInGameThread`. FUSER crashes with UE4SS's ProcessEvent hook on, so nothing may depend on it: no `RegisterHook` on Blueprint functions, no `NotifyOnNewObject`.
+Everything in the mod that touches a game object runs on the game thread, from `LoopInGameThreadWithDelay`. `LoopAsync` must not call `ExecuteInGameThread`: the two race on a Lua stack and crash FUSER, past pcall. FUSER also crashes with UE4SS's ProcessEvent hook on, so nothing may depend on it: no `RegisterHook` on Blueprint functions, no `NotifyOnNewObject`.
 
 Clawd is a second, optional mod and has nothing to do with the bridge: `crystalize/mod/Clawd` is its Lua, `clawd.py` fetches its pak from a GitHub release and writes the `.sig`, `game.py` installs and removes both, and `tools/clawd` rebuilds the pak. The pak is never committed: it is 8 MB, replaced on every rebuild, and rebuilding needs a UE 4.24 source build. A new one is tried in the game with `clawd on --pak`, published as a release, and pinned by `RELEASE` and `SHA256` in `clawd.py`. His mod must never spawn actors on the stage or re-create objects under names already in use; `docs/clawd.md` and its comments say what broke.
 

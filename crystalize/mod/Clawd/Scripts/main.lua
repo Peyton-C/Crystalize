@@ -363,14 +363,13 @@ RegisterKeyBind(Key.F8, function()
     end)
 end)
 
-LoopAsync(1000, function()
-    ExecuteInGameThread(function()
-        local ok, err = pcall(tick)
-        if not ok then
-            log("%s", tostring(err))
-        end
-    end)
-    return false
+-- Not LoopAsync and ExecuteInGameThread, which race the game thread on the Lua stack;
+-- the Crystalize mod's main.lua says how
+LoopInGameThreadWithDelay(1000, function()
+    local ok, err = pcall(tick)
+    if not ok then
+        log("%s", tostring(err))
+    end
 end)
 
 log("loaded")

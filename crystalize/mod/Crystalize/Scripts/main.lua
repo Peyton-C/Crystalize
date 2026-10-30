@@ -4,9 +4,15 @@
 -- ipc/response-<id>.json. UE4SS's Lua has no sockets and FUSER runs under Wine, so a
 -- shared folder is the channel; a table literal means load() replaces a JSON parser.
 --
--- Anything touching a game object runs through ExecuteInGameThread, which rides
--- UE4SS's EngineTick hook. HookUObjectProcessEvent must stay off: with it on, a
--- Blueprint event during the startup logos returns garbage and FUSER crashes on it.
+-- All of it runs from LoopInGameThreadWithDelay, which rides UE4SS's EngineTick hook.
+-- HookUObjectProcessEvent must stay off: with it on, a Blueprint event during the
+-- startup logos returns garbage and FUSER crashes on it.
+--
+-- LoopAsync and ExecuteInGameThread must not be used to get there. ExecuteInGameThread
+-- pushes onto and pops from the Lua stack game-thread actions run on, and when called
+-- from LoopAsync's thread it does that with nothing keeping the game thread out: UE4SS
+-- drops its mutex to run an action, and Lua's lock is released during C functions. A C
+-- function then reads the wrong stack slot as a table, which pcall cannot catch.
 
 local VERSION = "0.1.0"
 local POLL_MS = 50
@@ -1279,34 +1285,28 @@ local function poll(dir)
         return
     end
 
-    ExecuteInGameThread(function()
-        local wrote, werr = pcall(respond, dir, request.id, run(request))
-        if not wrote then
-            log("could not answer request %s: %s", tostring(request.id), tostring(werr))
-        end
-    end)
+    local wrote, werr = pcall(respond, dir, request.id, run(request))
+    if not wrote then
+        log("could not answer request %s: %s", tostring(request.id), tostring(werr))
+    end
 end
 
 local dir = ipcDir()
 -- A request written before FUSER started has been given up on already
 os.remove(dir .. "request.lua")
 
-LoopAsync(POLL_MS, function()
+LoopInGameThreadWithDelay(POLL_MS, function()
     local ok, err = pcall(poll, dir)
     if not ok then
         log("%s", tostring(err))
     end
-    return false
 end)
 
-LoopAsync(BREAK_CHECK_MS, function()
-    ExecuteInGameThread(function()
-        local ok, err = pcall(closeBreak)
-        if not ok then
-            log("show break: %s", tostring(err))
-        end
-    end)
-    return false
+LoopInGameThreadWithDelay(BREAK_CHECK_MS, function()
+    local ok, err = pcall(closeBreak)
+    if not ok then
+        log("show break: %s", tostring(err))
+    end
 end)
 
 log("%s loaded, watching %s", VERSION, dir)

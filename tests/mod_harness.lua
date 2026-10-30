@@ -322,7 +322,7 @@ function ExecuteInGameThread(fn)
     fn()
 end
 
-function LoopAsync() end
+function LoopInGameThreadWithDelay() end
 
 print = function() end -- the mod's own log lines would muddle the JSON on stdout
 

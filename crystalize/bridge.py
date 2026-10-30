@@ -15,10 +15,11 @@ import os
 import threading
 import time
 
-# The mod looks for a request every 50 ms, so one still there after this is not being read
-PICKUP_SECONDS = 1.5
+# The mod looks for a request on FUSER's game thread, which a loading screen can hold for
+# seconds, so a request is only given up on after this long
+PICKUP_SECONDS = 10.0
 
-# The answer waits on FUSER's game thread, which a loading screen can hold for seconds
+# The answer waits on the game thread too, and a command can itself start a load
 ANSWER_SECONDS = 10.0
 
 POLL_SECONDS = 0.02
