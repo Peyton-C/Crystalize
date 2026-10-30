@@ -194,6 +194,8 @@ Crystalize keeps a record of each campaign set in `~/.local/share/crystalize/set
 | `debug_read` | Named fields of the first object of a class, or of every one with `all`, without calling anything |
 | `debug_lua` | Runs Lua on FUSER's game thread with UE4SS's globals and the mod's helpers, and returns what it returns and prints |
 
+`crystalize lua '<code>'` does what `debug_lua` does from the command line, or reads the code from stdin with `-`, for when the server is not running with `--debug` or is running code older than the working tree. It has a bridge of its own, so use it while the server is idle.
+
 Run only one server against the game at a time, so switch the flag on the one you have rather than adding a second:
 
 ```sh

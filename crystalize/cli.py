@@ -30,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
     where.add_argument("--list", action="store_true", help="list the campaign's sets")
     go.add_argument("--restart", action="store_true",
                     help="install the mod, close FUSER if it is open, and start it again")
+    run = sub.add_parser("lua", help="run Lua on FUSER's game thread, as debug_lua does, "
+                                     "and print what it returns and prints")
+    run.add_argument("code", help="a chunk, such as \"return FindFirstOf('HypeAudio'):"
+                                  "GetCurrentBPM()\", or - to read it from stdin")
     clawd = sub.add_parser("clawd", help="put Clawd in headphones in place of FUSER's avatars, "
                                          "or take him out")
     clawd.add_argument("switch", choices=["on", "off"])
@@ -75,6 +79,16 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "launch":
         return _launch(args, folder, bridge)
+
+    if args.command == "lua":
+        code = sys.stdin.read() if args.code == "-" else args.code
+        try:
+            result = bridge.call("lua", code=code)
+        except GameError as e:
+            print(f"crystalize: {e}", file=sys.stderr)
+            return 1
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0
 
     if args.command == "state":
         from .mcp import Server
