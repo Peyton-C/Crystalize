@@ -510,6 +510,74 @@ def test_perform_presses_on_each_downbeat_and_lets_go_before_the_bar_ends():
     assert p.perform_status()["played"] == 2 and p.perform_status()["error"] is None
 
 
+class RecordingBridge(InstrumentBridge):
+    """FUSER that puts a spawned disc on the bass deck, as it picks the deck itself."""
+
+    def call(self, op, **args):
+        for c in args.get("commands", []):
+            if c["op"] == "record_spawn":
+                self.playing[1] = "CraftedInstrument_BassCanvas2_1"
+        return super().call(op, **args)
+
+
+def test_record_presses_each_beat_then_spawns_on_the_downbeat_after():
+    fuser = RecordingBridge(beat=3.9)
+    p = Player(fuser)
+    p.record("BassCanvas2", queue=False)
+    for step in range(8):  # each beat from 4 pressed, and let go half a beat on
+        wait_until(lambda: len(fuser.sent) == 2 + step * 2)
+        assert fuser.sent[-1][2]["on"] is True and fuser.sent[-1][2]["record"] is True
+        fuser.to(4.4 + step)
+        wait_until(lambda: len(fuser.sent) == 3 + step * 2)
+        assert fuser.sent[-1][2]["on"] is False
+        fuser.to(4.9 + step)
+    wait_until(lambda: fuser.sent[-1][1] == "record_spawn")
+    assert fuser.sent[-1] == (11.9, "record_spawn", {"slot": 0, "queue": False})
+    wait_until(lambda: p.perform_status()["disc"])
+    status = p.perform_status()
+    assert status["disc"] == "CraftedInstrument_BassCanvas2_1" and status["deck"] == 1
+    assert status["played"] == 8
+
+    # Kept loaded past the spawn, then unloaded, and the disc is remembered
+    assert status["on"]
+    fuser.to(12.9)
+    wait_until(lambda: not p.perform_status()["on"])
+    assert fuser.sent[-1][1:] == ("perform_end", {"slot": 0})
+    assert p.recorded() == [{"disc": "CraftedInstrument_BassCanvas2_1",
+                             "instrument": "BassCanvas2", "deck": 1}]
+    p.forget_recorded()
+    assert p.recorded() == []
+
+
+def test_record_is_not_fooled_by_a_recorded_disc_already_on_a_deck():
+    older = "CraftedInstrument_BassCanvas2_0"
+    fuser = RecordingBridge(beat=3.9, playing=(older, "CraftedInstrument_DrumCanvas2_0", None, None))
+    p = Player(fuser)
+    p.record("BassCanvas2")
+    for step in range(8):
+        wait_until(lambda: len(fuser.sent) == 2 + step * 2)
+        fuser.to(4.4 + step)
+        wait_until(lambda: len(fuser.sent) == 3 + step * 2)
+        fuser.to(4.9 + step)
+    wait_until(lambda: p.perform_status()["disc"])
+    assert p.perform_status()["disc"] == "CraftedInstrument_BassCanvas2_1"
+    assert p.perform_status()["deck"] == 1
+    p.stop_perform()
+
+
+def test_a_disc_that_never_lands_is_an_error(monkeypatch):
+    monkeypatch.setattr(player_module, "RECORD_BEATS", 1)
+    monkeypatch.setattr(player_module, "RECORD_LAND_SECONDS", 0.05)
+    fuser = InstrumentBridge(beat=3.9)
+    p = Player(fuser)
+    p.record("BassCanvas2")
+    wait_until(lambda: len(fuser.sent) == 2)
+    fuser.to(4.9)
+    wait_until(lambda: not p.perform_status()["on"])
+    assert "did not reach a deck" in p.perform_status()["error"]
+    assert fuser.sent[-1][1] == "perform_end"
+
+
 def test_stopping_a_performance_lets_go_and_unloads():
     fuser = InstrumentBridge(beat=3.9)
     p = Player(fuser)

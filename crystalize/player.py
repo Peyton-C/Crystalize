@@ -73,6 +73,19 @@ PERFORM_LOAD_SECONDS = 5
 # no timing points, so a fade starts at once instead of waiting for a downbeat
 FADE_STEPS_PER_BEAT = 4
 
+# A recording fills FUSER's loop, 8 beats whatever the instrument, with a press on each beat
+# let go this far on. FUSER keeps it in steps of a quarter beat
+RECORD_BEATS = 8
+RECORD_HOLD_BEATS = 0.5
+
+# FUSER names a recorded disc from its instrument and the time
+RECORDED_PREFIX = "CraftedInstrument_"
+
+# How long a spawned disc may take to show on a deck, and how long the instrument stays
+# loaded after, past the spawn on the downbeat
+RECORD_LAND_SECONDS = 5
+RECORD_END_BEATS = 1
+
 # The instrument slot performances play in. FUSER has four, apart from the decks
 PERFORM_SLOT = 0
 
@@ -113,6 +126,7 @@ class Player:
         self._performer: threading.Thread | None = None
         self._perform_stop = threading.Event()
         self._perform_status: dict = {}
+        self._recorded: list[dict] = []  # discs made this session, newest last
 
     def start(self, name: str, schedule: list, end_bar: int, opening_decks: set[int]) -> None:
         """Play `schedule`, a Plan's, stopping any mix already playing. `opening_decks`
@@ -195,8 +209,32 @@ class Player:
             target=self._perform, args=(instrument, bars, self._perform_stop), daemon=True)
         self._performer.start()
 
+    def record(self, instrument: str, queue: bool = False) -> None:
+        """Record a loop on `instrument` and turn it into a disc: load it, press a pad on
+        each beat of the next RECORD_BEATS from a downbeat, and spawn the disc on the downbeat
+        after, cued with `queue`. Shares the slot with a performance, so it stops any going."""
+        self.stop_perform()
+        self._perform_stop = threading.Event()
+        with self._lock:
+            self._perform_status = {"instrument": instrument, "beats": RECORD_BEATS, "on": True,
+                                    "played": 0, "disc": None, "deck": None, "queued": queue,
+                                    "error": None}
+        self._performer = threading.Thread(
+            target=self._record, args=(instrument, queue, self._perform_stop), daemon=True)
+        self._performer.start()
+
+    def recorded(self) -> list[dict]:
+        """The discs recorded this session, which drop by name like any other."""
+        with self._lock:
+            return [dict(r) for r in self._recorded]
+
+    def forget_recorded(self) -> None:
+        """Forget the recorded discs, as when a new set is loaded."""
+        with self._lock:
+            self._recorded.clear()
+
     def stop_perform(self) -> None:
-        """Let go of the pad and unload the instrument, if a performance is going."""
+        """Let go of the pad and unload the instrument, if a performance or recording is going."""
         if self._performer and self._performer.is_alive():
             self._perform_stop.set()
             self._performer.join()
@@ -258,12 +296,8 @@ class Player:
         try:
             self.bridge.call("perform_begin", name=instrument, **slot)
             begun = True
-            deadline = time.monotonic() + PERFORM_LOAD_SECONDS
-            while not self.bridge.call("perform_state", **slot).get("ready"):
-                if time.monotonic() > deadline:
-                    raise GameError(f"{instrument} did not load in {PERFORM_LOAD_SECONDS} seconds")
-                if stop.wait(POLL_SECONDS):
-                    return
+            if not self._loaded(instrument, stop):
+                return
             start = _next_downbeat(*self._clock())
             for bar in range(bars):
                 press = start + bar * BEATS_PER_BAR
@@ -282,18 +316,86 @@ class Player:
             with self._lock:
                 self._perform_status["error"] = str(e)
         finally:
-            # Let go and unload even when stopped early or after an error, so the
-            # instrument never sounds on by itself
-            try:
-                if held:
-                    self._send([("perform_press", {**slot, **pad, "on": False})])
-                if begun:
-                    self._send([("perform_end", slot)])
-            except GameError as e:
+            self._let_go(slot, pad, held, begun)
+
+    def _loaded(self, instrument, stop) -> bool:
+        """Wait for the instrument to load. Returns whether it did before `stop` was set."""
+        deadline = time.monotonic() + PERFORM_LOAD_SECONDS
+        while not self.bridge.call("perform_state", slot=PERFORM_SLOT).get("ready"):
+            if time.monotonic() > deadline:
+                raise GameError(f"{instrument} did not load in {PERFORM_LOAD_SECONDS} seconds")
+            if stop.wait(POLL_SECONDS):
+                return False
+        return True
+
+    def _record(self, instrument, queue, stop) -> None:
+        slot = {"slot": PERFORM_SLOT}
+        pad = {"x": PERFORM_PAD[0], "y": PERFORM_PAD[1], "record": True}
+        begun = held = False
+        try:
+            self.bridge.call("perform_begin", name=instrument, **slot)
+            begun = True
+            if not self._loaded(instrument, stop):
+                return
+            before = _discs_on_decks(self.bridge.call("state"))
+            start = _next_downbeat(*self._clock())
+            for beat in range(RECORD_BEATS):
+                if not self._until(start + beat, stop):
+                    return
+                self._send([("perform_press", {**slot, **pad, "on": True})])
+                held = True
+                if not self._until(start + beat + RECORD_HOLD_BEATS, stop):
+                    return
+                self._send([("perform_press", {**slot, **pad, "on": False})])
+                held = False
                 with self._lock:
-                    self._perform_status["error"] = self._perform_status["error"] or str(e)
+                    self._perform_status["played"] = beat + 1
+            spawn = start + RECORD_BEATS
+            if not self._until(spawn, stop):
+                return
+            self._send([("record_spawn", {**slot, "queue": queue})])
+            self._find_recorded(instrument, before, stop)
+            self._until(spawn + RECORD_END_BEATS, stop)
+        except GameError as e:
             with self._lock:
-                self._perform_status["on"] = False
+                self._perform_status["error"] = str(e)
+        finally:
+            self._let_go(slot, pad, held, begun)
+
+    def _find_recorded(self, instrument, before, stop) -> None:
+        """Read which disc the spawn made and where it went: FUSER names it and picks its
+        deck, and says neither. It is the one of this instrument's on a deck that was not
+        there before the recording, which also covers discs from before a server restart."""
+        prefix = f"{RECORDED_PREFIX}{instrument}_"
+        deadline = time.monotonic() + RECORD_LAND_SECONDS
+        while not stop.is_set():
+            for deck, held in enumerate(self.bridge.call("state")["decks"]):
+                for where in ("playing", "queued"):
+                    disc = held and held.get(where)
+                    if disc and disc.startswith(prefix) and disc not in before:
+                        with self._lock:
+                            self._recorded.append(
+                                {"disc": disc, "instrument": instrument, "deck": deck})
+                            self._perform_status.update(disc=disc, deck=deck)
+                        return
+            if time.monotonic() > deadline:
+                raise GameError(f"the disc recorded on {instrument} did not reach a deck in "
+                                f"{RECORD_LAND_SECONDS} seconds")
+            stop.wait(POLL_SECONDS)
+
+    def _let_go(self, slot, pad, held, begun) -> None:
+        # Let go and unload even when stopped early or after an error, so the instrument
+        # never sounds on by itself
+        try:
+            if held:
+                self._send([("perform_press", {**slot, **pad, "on": False})])
+            if begun:
+                self._send([("perform_end", slot)])
+        except GameError as e:
+            with self._lock:
+                self._perform_status["error"] = self._perform_status["error"] or str(e)
+        with self._lock:
+            self._perform_status["on"] = False
 
     def _until(self, target, stop) -> bool:
         """Wait until a command sent now would reach FUSER just after clock beat `target`,
@@ -554,6 +656,11 @@ class Player:
             self._keep_status["last"] = {"disc": disc, "deck": deck} if kind == "drop" \
                 else {"ejected": True, "deck": deck}
         return turn
+
+def _discs_on_decks(state: dict) -> set[str]:
+    return {held[where] for held in state["decks"] if held
+            for where in ("playing", "queued") if held.get(where)}
+
 
 def _mix(decks) -> frozenset:
     """A mix as freshness tells mixes apart, by its discs, whichever decks they are on."""

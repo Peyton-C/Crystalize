@@ -328,6 +328,22 @@ TOOLS = [
         }},
     },
     {
+        "name": "record_disc",
+        "description": "Record a 2 bar loop on an instrument and turn it into a disc, as a "
+                       "player does on its panel: from the next bar it plays the loop, and on "
+                       "the bar after, the disc lands on the deck FUSER keeps for its type, "
+                       "replacing what is there, or is cued there with `queue`. A Make goal "
+                       "counts this. Without `instrument`, the one the set features; else a "
+                       "name or title of any FUSER has. Returns at once; get_state follows it "
+                       "and lists the discs recorded, which drop_disc, mute_deck and the rest "
+                       "take by name. With `stop`, it gives up.",
+        "inputSchema": {"type": "object", "properties": {
+            "instrument": {"type": "string"},
+            "queue": {"type": "boolean"},
+            "stop": {"type": "boolean"},
+        }},
+    },
+    {
         "name": "use_fx",
         "description": "Turn an effect on or off over a deck, or over all four without `deck`, "
                        "on the next downbeat, as FUSER's FX panel does, which grades perfect. A "
@@ -504,7 +520,11 @@ PROMPTS = [
             "its deck; fade it back with to 1 unless the goal wants it silent. Fade in "
             "means fade_deck to 0 first, then to 1. Take a Snapshot means take_snapshot. A "
             "Perform goal counts each bar an instrument plays: perform with bars as many as "
-            "it still needs. Its section waits until it is done. A Use FX goal counts the "
+            "it still needs. Its section waits until it is done. Make an instrument's loop, "
+            "then drop the disc means record_disc, which does both. Any other goal for an "
+            "Instrument disc, to drop, cue, solo, include or use an effect on, takes one "
+            "record_disc made: get_state lists them by name. To cue one, use the deck of its "
+            "type with no copy of it playing, or dropping the cue may not count. A Use FX goal counts the "
             "effect turned on over a deck holding the disc it wants: use_fx on that deck, "
             "then off again a bar later, and on again for the next count. On 4 discs at once "
             "means use_fx without deck, with four discs playing. Drop or Swap on an effect "
@@ -558,6 +578,7 @@ class Server:
         self._discs: dict[str, dict] = {}
         self._bpm_range = None
         self._songs_session = None
+        self._recorded_session = None
         self._offline_since = None
         self._calls: list[threading.Thread] = []
         # The set as the agent last saw it, through get_set or await_event, so an event
@@ -755,7 +776,14 @@ class Server:
             result["keep_alive"] = {k: v for k, v in keeping.items() if v is not None}
         performing = self.player.perform_status()
         if performing:
-            result["perform"] = {k: v for k, v in performing.items() if v is not None}
+            shown = {k: v for k, v in performing.items() if v is not None}
+            if "deck" in shown:
+                shown["deck"] += 1
+            result["record" if "beats" in performing else "perform"] = shown
+        self._forget_recorded_if_restarted()
+        recorded = self.player.recorded()
+        if recorded:
+            result["recorded"] = [{**r, "deck": r["deck"] + 1} for r in recorded]
         return result
 
     def _tool_get_set(self, args: dict) -> dict:
@@ -1259,6 +1287,23 @@ class Server:
         self.player.perform(instrument["name"], bars)
         return {"performing": instrument, "bars": bars}
 
+    def _tool_record_disc(self, args: dict) -> dict:
+        if args.get("stop"):
+            self.player.stop_perform()
+            return {"recording": False}
+        instrument = self._instrument(args.get("instrument"))
+        self._forget_recorded_if_restarted()
+        self.player.record(instrument["name"], bool(args.get("queue")))
+        return {"recording": instrument, "queue": bool(args.get("queue"))}
+
+    def _forget_recorded_if_restarted(self) -> None:
+        # Recorded discs live only in the running game, and FUSER can restart without this
+        # server's go_to, by a crash or the command line
+        if self.bridge.session != self._recorded_session:
+            if self._recorded_session is not None:
+                self.player.forget_recorded()
+            self._recorded_session = self.bridge.session
+
     def _instrument(self, asked: str | None) -> dict:
         """The instrument asked for, by name or title, or else the set's first featured one,
         or failing that, outside a set or in one featuring none, the first FUSER has."""
@@ -1355,6 +1400,7 @@ class Server:
         self.player.stop_keep_alive()
         self.player.stop_perform()
         self.player.stop_fades()
+        self.player.forget_recorded()
         self._log.end()
         self._seen, self._warned = None, set()
         try:

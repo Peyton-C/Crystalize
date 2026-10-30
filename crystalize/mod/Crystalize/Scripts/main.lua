@@ -116,6 +116,9 @@ local function discName(disc)
     return disc:GetCelShortName():ToString()
 end
 
+-- How FUSER starts the name of a disc recorded on an instrument
+local CRAFTED = "CraftedInstrument_"
+
 -- Every disc FUSER has loaded, by short name. Freestyle loads the whole library, so a
 -- miss means a stale cache or a name that does not exist, and one rebuild tells which.
 local cels = {}
@@ -128,6 +131,12 @@ local function findCel(name)
     cels = {}
     for _, c in ipairs(FindAllOf("SongCelData") or {}) do
         if valid(c) then
+            cels[c.shortName:ToString()] = c
+        end
+    end
+    -- A recorded disc is an instrument's cel, made when it was spawned, and drops like any
+    for _, c in ipairs(FindAllOf("InstrumentCelData") or {}) do
+        if valid(c) and c.shortName:ToString():find(CRAFTED, 1, true) == 1 then
             cels[c.shortName:ToString()] = c
         end
     end
@@ -368,20 +377,20 @@ end
 -- a pad is held through counts once to a Perform goal, a tap and a held press alike.
 
 -- EGridInstrumentMode: Soloing plays over the mix, as a performance, where Crafting records
-local SOLOING = 1
+local CRAFTING, SOLOING = 0, 1
 
 local function instrumentEntry(inst)
     return { name = inst.shortName:ToString(), title = text(inst.Title) }
 end
 
 -- Every instrument FUSER has loaded, MIDI canvases and any other kind. A placeholder
--- named None is among them
+-- named None is among them, and so is every disc recorded so far, which is not an instrument
 function ops.instruments()
     local out = array()
     for _, inst in ipairs(FindAllOf("InstrumentCelData") or {}) do
         if valid(inst) then
             local ok, entry = pcall(instrumentEntry, inst)
-            if ok and entry.name ~= "None" then
+            if ok and entry.name ~= "None" and entry.name:find(CRAFTED, 1, true) ~= 1 then
                 out[#out + 1] = entry
             end
         end
@@ -431,9 +440,17 @@ function ops.perform_press(args)
     local slot = checkSlot(args.slot)
     first("InstrumentCraftingState"):NetSetGridCraftingState(slot, {
         PrimaryActionOn = args.on == true, SecondaryActionOn = false,
-        GridPos = { X = args.x or 0, Y = args.y or 0 }, mode = SOLOING,
+        GridPos = { X = args.x or 0, Y = args.y or 0 }, mode = args.record and CRAFTING or SOLOING,
     })
     return { slot = slot, on = args.on == true }
+end
+
+-- Turns what the slot has recorded into a disc, on the deck FUSER keeps for its type. It has
+-- no way to name another deck, so a disc wanted elsewhere is dropped there after, by name
+function ops.record_spawn(args)
+    local slot = checkSlot(args.slot)
+    first("InstrumentCraftingState"):NetSpawnCraftedDisc(slot, false, args.queue == true)
+    return { slot = slot, queued = args.queue == true }
 end
 
 function ops.perform_end(args)

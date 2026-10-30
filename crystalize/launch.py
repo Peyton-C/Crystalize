@@ -113,8 +113,10 @@ def sign_in(bridge, seconds: float = SIGN_IN_SECONDS) -> dict:
 
 
 def _signed_in(state: dict) -> bool:
-    # The title screen can be gone once a venue has loaded since
-    if state.get("title") == TITLE_DONE:
+    # The title screen can be gone once a venue has loaded since. Back at the main menu from
+    # a set, FUSER makes a new one that reads unstarted and is never used, so the menu itself
+    # is the proof: sign-in is the only way there
+    if state.get("title") == TITLE_DONE or state.get("screen") == MAIN_MENU:
         return True
     return state.get("title") is None and state.get("screen") not in (None, 0, INTRO, TITLE)
 

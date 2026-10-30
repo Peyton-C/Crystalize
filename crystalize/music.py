@@ -241,6 +241,8 @@ def goal_text(name: str | None, song: str | None = None,
         name = name.replace("{RequiredSong}", song)
     if instrument:
         name = name.replace("{CustomInstrument}", instrument)
+    # A goal featuring no instrument takes any: "Drop a {btType} {CustomInstrument} Instrument disc"
+    name = name.replace("{CustomInstrument} ", "")
     if effect:
         name = name.replace("{Effect}", effect)
     if tempo:

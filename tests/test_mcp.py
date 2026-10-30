@@ -788,6 +788,44 @@ def test_perform_stop(talk, monkeypatch):
     assert result == {"performing": False} and stopped
 
 
+def test_record_disc_records_the_featured_instrument(talk, stage, monkeypatch):
+    from crystalize.player import Player
+    recorded = []
+    monkeypatch.setattr(Player, "record", lambda self, name, queue: recorded.append((name, queue)))
+    result, failed = call(talk, "record_disc", queue=True)
+    assert not failed and result["recording"]["title"] == "Electro Funk Drums"
+    assert recorded == [("DrumCanvas2", True)]
+    call(talk, "record_disc", instrument="banjo")
+    assert recorded[-1] == ("Banjo", False)
+
+
+def test_get_state_lists_recorded_discs_from_deck_1(talk, monkeypatch):
+    from crystalize.player import Player
+    monkeypatch.setattr(Player, "recorded", lambda self: [
+        {"disc": "CraftedInstrument_Banjo_1", "instrument": "Banjo", "deck": 0}])
+    result, _ = call(talk, "get_state")
+    assert result["recorded"] == [{"disc": "CraftedInstrument_Banjo_1", "instrument": "Banjo",
+                                   "deck": 1}]
+
+
+def test_a_restarted_fuser_forgets_recorded_discs(fake, monkeypatch):
+    from crystalize.player import Player
+    forgot = []
+    monkeypatch.setattr(Player, "forget_recorded", lambda self: forgot.append(True))
+    server = mcp.Server(fake, io.BytesIO(), io.BytesIO())
+    server._tool_get_state({})
+    assert not forgot
+    fake.session = "s2"
+    server._tool_get_state({})
+    assert forgot == [True]
+
+
+def test_goal_text_drops_the_instrument_placeholder_when_it_features_none():
+    from crystalize import music
+    assert music.goal_text("Drop a {btType} {CustomInstrument} Instrument disc") \
+        == "Drop a beat (blue) Instrument disc"
+
+
 def test_goal_text_fills_the_featured_instrument():
     from crystalize import music
     assert music.goal_text("Perform on {CustomInstrument} Instrument", None, None,

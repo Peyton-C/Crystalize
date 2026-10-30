@@ -24,6 +24,7 @@ The mod's commands are thin wrappers over FUSER's own functions. The server turn
 | `mute`, `solo` | `AudioController.NetMuteTrack`, `NetSoloTrack` |
 | `gain` | `AudioController.NetSetGainForTrack`, one step of a fade. `state` reads it back from `DeckState.GetDeckGain` |
 | `snapshot` | `SavedMomentsMgr.SaveCurrentMoment`, what the Take Snapshot key does |
+| `record_spawn` | `InstrumentCraftingState.NetSpawnCraftedDisc`, the slot's recording as a disc. `perform_press` with `record` presses in Crafting mode, which records |
 | `set_state` | `RequestMgr._requests` for crowd requests, `ShowGoalsMgr` for goals, `SkillStat_Freshness` for freshness, the crowd meter from its widget, `WBP_ShowsCrowdMeter_C`, and `ShowFlowMgr` for the score, the stars and whether the set is ending. Each part is read on its own, and the ones that fail are listed |
 | `flow` | `ShellFlowMgr.GetCurrentScreen`, the title screen's sign-in state, `LevelLoadConfig._gameMode`, and the session's `ShowFlowMgr` or `FreestyleFlowMgr` state |
 | `sets` | Each venue's `MissionPrompts` from `VenueMgr.Venues` |

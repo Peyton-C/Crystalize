@@ -145,6 +145,24 @@ def test_perform_press_solos_the_pad(ask):
                                    "GridPos": {"X": 2, "Y": 3}, "mode": 1}]}]
 
 
+def test_a_recording_press_is_in_crafting_mode(ask):
+    body, calls = ask("perform_press", slot=0, x=2, y=3, on=True, record=True)
+    assert body["ok"] and calls[0]["args"][1]["mode"] == 0
+
+
+def test_record_spawn_makes_the_disc(ask):
+    body, calls = ask("record_spawn", slot=0, queue=True)
+    assert body["result"] == {"slot": 0, "queued": True}
+    assert calls == [{"object": "InstrumentCraftingState", "method": "NetSpawnCraftedDisc",
+                      "args": [0, False, True]}]
+
+
+def test_a_recorded_disc_drops_by_name(ask):
+    body, calls = ask("drop", name="CraftedInstrument_Banjo_1", deck=2)
+    assert body["ok"] and calls[0]["method"] == "NetSpawnDisc"
+    assert calls[0]["args"][:3] == ["Recorded", 1, 2]
+
+
 def test_perform_end_and_a_bad_slot(ask):
     body, calls = ask("perform_end", slot=0)
     assert body["ok"] and [c["method"] for c in calls] == ["NetEndCrafting"]

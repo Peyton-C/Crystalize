@@ -147,7 +147,8 @@ end
 
 local drums = object("DrumCanvas2", { shortName = name("DrumCanvas2"), Title = name("Electro Funk Drums") })
 local instruments = { drums, object("NoInstrument", { shortName = name("None"), Title = name("") }),
-                      object("Banjo", { shortName = name("Banjo"), Title = name("Banjo") }) }
+                      object("Banjo", { shortName = name("Banjo"), Title = name("Banjo") }),
+                      object("Recorded", { shortName = name("CraftedInstrument_Banjo_1"), Title = name("Banjo") }) }
 -- A goal's data as the set's config holds it: the asset, of which the goal holds a copy
 local function asset(label)
     return object(label .. " asset", { GetFullName = function()

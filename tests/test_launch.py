@@ -78,6 +78,12 @@ def test_sign_in_already_under_way_is_waited_for_not_repeated():
     assert game.ops() == []
 
 
+def test_back_at_the_menu_a_new_unstarted_title_screen_is_not_signed_in_again():
+    game = FakeGame(screen=3, title=0)
+    launch.go_to(game, "set", 2, 1)
+    assert game.ops() == ["sets", "load_set", "begin"]
+
+
 def test_freestyle_walks_only_to_intro():
     game = FakeGame()
     assert launch.go_to(game, "freestyle")["at"] == "freestyle"
