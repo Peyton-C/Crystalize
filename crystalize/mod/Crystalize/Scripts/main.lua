@@ -531,7 +531,7 @@ end
 -- one step; the order, and the waiting between them while a map loads, is launch.py's.
 
 -- EShellScreenType
-local SCREEN_MAIN_MENU, SCREEN_GAMEPLAY = 3, 10
+local SCREEN_MAIN_MENU, SCREEN_GAMEPLAY, SCREEN_SHOW_BREAK = 3, 10, 48
 -- EHypeGameMode
 local MODE_SHOW = 1
 
@@ -1111,6 +1111,62 @@ function ops.batch(args)
     return results
 end
 
+------------------------------------------------------------------------------- show breaks
+
+-- EGameFlowState
+local SHOW_BREAK = 5
+local BREAK_CHECK_MS = 500
+-- How many checks the dialog stays on a page before it is closed
+local SLIDE_CHECKS = 2
+-- How many checks a break with messages may go without showing a page
+local STUCK_CHECKS = 40
+
+-- A show break's dialog ("Hold Continue") holds FUSER between sections, and no goal or
+-- trick counts until the break ends, so the mod closes it on its own rather than wait
+-- for a request: a break can open while the agent is between tool calls. The decision is
+-- the mod's because nothing on the server's side runs then.
+-- _HandleShowBreakProgression ends the whole break once the dialog is on a page. Called
+-- earlier, during the camera move a set's opening break starts with, it hid the dialog
+-- and the break never ended; _GoToNextBreakMessage then ended it, so that is the way out
+-- of a break that never shows a page. On a page, _GoToNextBreakMessage and the
+-- WBP_ShowBreak_C widget's AdvanceShowFlow left the dialog up.
+-- A break with no messages is left alone: it ends by itself, after 2 to 10 bars.
+-- Only the two fields are read until the show is in a break on the gameplay screen or
+-- the show-break screen FUSER switches to for the dialog: calling the flow manager's
+-- functions while go_to replaced the map crashed FUSER.
+local slideChecks, stuckChecks, closed = 0, 0, false
+
+local function closeBreak()
+    local cfg = FindFirstOf("LevelLoadConfig")
+    local shell = FindFirstOf("ShellFlowMgr")
+    local f = valid(cfg) and valid(shell) and flowMgr(cfg._gameMode)
+    local screen = f and cfg._gameMode == MODE_SHOW and f.CurrentState == SHOW_BREAK
+        and shell:GetCurrentScreen()
+    if (screen ~= SCREEN_GAMEPLAY and screen ~= SCREEN_SHOW_BREAK)
+            or f:GetNumMessagesThisBreak() == 0 then
+        slideChecks, stuckChecks, closed = 0, 0, false
+        return
+    end
+    if closed then
+        return
+    end
+    if f:IsOnFirstSlideOfMessages() or f:IsOnLastSlideOfMessages() then
+        slideChecks = slideChecks + 1
+        if slideChecks >= SLIDE_CHECKS then
+            f:_HandleShowBreakProgression()
+            closed = true
+            log("closed a show break")
+        end
+        return
+    end
+    stuckChecks = stuckChecks + 1
+    if stuckChecks >= STUCK_CHECKS then
+        f:_GoToNextBreakMessage()
+        closed = true
+        log("ended a show break that showed no page")
+    end
+end
+
 ------------------------------------------------------------------------------- ipc
 
 local function ipcDir()
@@ -1188,6 +1244,16 @@ LoopAsync(POLL_MS, function()
     return false
 end)
 
+LoopAsync(BREAK_CHECK_MS, function()
+    ExecuteInGameThread(function()
+        local ok, err = pcall(closeBreak)
+        if not ok then
+            log("show break: %s", tostring(err))
+        end
+    end)
+    return false
+end)
+
 log("%s loaded, watching %s", VERSION, dir)
 
-return { encode = encode, array = array, NULL = NULL, poll = poll }
+return { encode = encode, array = array, NULL = NULL, poll = poll, closeBreak = closeBreak }

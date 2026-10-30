@@ -36,3 +36,6 @@ The mod's commands are thin wrappers over FUSER's own functions. The server turn
 | `batch` | Several of the above in order, on one frame. A bar's steps go as one, so they all reach FUSER within the window that counts as on the downbeat |
 
 The `Net` functions are FUSER's multiplayer calls. In freestyle and the campaign the player is the host, so they run locally.
+
+## Show breaks
+Between some sections of a campaign set FUSER puts up a dialog to hold Continue on, and no goal or trick counts until the break ends. The mod closes it itself, without a request, since a break can open while the agent is between tool calls. It checks every half second, and once the dialog is on a page it calls `ShowFlowMgr._HandleShowBreakProgression`, which ends the whole break. Called before the dialog is up it leaves the break stuck, so a break that never shows a page is moved on with `_GoToNextBreakMessage` after 20 seconds. A break with no messages is left to end by itself, which takes 2 to 10 bars. FUSER shows the dialogs only on a set not yet finished, so try a change here on one of those.

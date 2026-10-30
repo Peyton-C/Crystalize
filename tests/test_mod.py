@@ -19,11 +19,13 @@ pytestmark = pytest.mark.skipif(LUA is None, reason="needs lua 5.4")
 @pytest.fixture
 def ask(tmp_path):
     """Send the mod one request; get back its response and the game calls it made."""
-    def ask(op, missing=None, raw=None, **args):
+    def ask(op, missing=None, raw=None, breaks=0, flow=None, messages=0, screen=3,
+            page="none", **args):
         ipc = str(tmp_path) + os.sep
         with open(os.path.join(ipc, "request.lua"), "w", encoding="utf-8") as f:
             f.write(raw if raw is not None else "return " + lua({"id": 7, "op": op, "args": args}))
-        cmd = [LUA, HARNESS, MAIN, ipc] + ([missing] if missing else [])
+        cmd = [LUA, HARNESS, MAIN, ipc, missing or "", str(breaks),
+               "" if flow is None else str(flow), str(messages), str(screen), page]
         out = subprocess.run(cmd, capture_output=True, text=True, check=True)
         assert not os.path.exists(os.path.join(ipc, "request.lua"))
         response = os.path.join(ipc, "response-7.json")
@@ -394,3 +396,44 @@ def test_goals_without_featured_songs(ask):
     state = body["result"]
     assert any(p.startswith("featured songs: ") for p in state["problems"])
     assert len(state["goals"]) == 5 and state["goals"][1]["song"] is None
+
+
+def test_show_break_is_closed_once_its_dialog_is_on_a_page(ask):
+    _, calls = ask("ping", breaks=1, flow=5, messages=2, screen=10, page="first")
+    assert calls == []
+    # Once, though the break goes on after its dialog closes
+    _, calls = ask("ping", breaks=20, flow=5, messages=2, screen=10, page="first")
+    assert calls == [{"object": "ShowFlowMgr", "method": "_HandleShowBreakProgression",
+                      "args": []}]
+    _, calls = ask("ping", breaks=2, flow=5, messages=1, screen=10, page="last")
+    assert [c["method"] for c in calls] == ["_HandleShowBreakProgression"]
+    # FUSER puts the dialog on a show-break screen of its own
+    _, calls = ask("ping", breaks=2, flow=5, messages=1, screen=48, page="last")
+    assert [c["method"] for c in calls] == ["_HandleShowBreakProgression"]
+
+
+def test_show_break_that_never_shows_a_page_is_moved_on(ask):
+    _, calls = ask("ping", breaks=39, flow=5, messages=1, screen=10)
+    assert calls == []
+    _, calls = ask("ping", breaks=60, flow=5, messages=1, screen=10)
+    assert calls == [{"object": "ShowFlowMgr", "method": "_GoToNextBreakMessage", "args": []}]
+
+
+def test_show_break_without_messages_is_left_to_end(ask):
+    _, calls = ask("ping", breaks=60, flow=5, messages=0, screen=10, page="first")
+    assert calls == []
+
+
+def test_show_break_check_waits_for_the_gameplay_screen(ask):
+    _, calls = ask("ping", breaks=60, flow=5, messages=2, screen=3, page="first")
+    assert calls == []
+
+
+def test_show_break_check_leaves_gameplay_alone(ask):
+    _, calls = ask("ping", breaks=60, flow=4, messages=2, screen=10, page="first")
+    assert calls == []
+
+
+def test_show_break_check_without_a_show(ask):
+    body, calls = ask("ping", missing="ShowFlowMgr", breaks=8)
+    assert body["ok"] and calls == []

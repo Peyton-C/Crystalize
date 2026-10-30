@@ -1,10 +1,17 @@
 -- Loads the mod against a fake FUSER, answers one request, and prints the game calls
--- it made as JSON. Usage: lua mod_harness.lua <main.lua> <ipc dir> [missing class]
+-- it made as JSON. Usage:
+--   lua mod_harness.lua <main.lua> <ipc dir> [missing class] [break checks] [flow state]
+--                       [messages] [screen] [page]
+-- Break checks run the mod's show-break check that many times first, with the show's
+-- flow put in the state given, its break holding that many messages, FUSER on that
+-- screen and the dialog on its first page, its last, or none.
 --
 -- The fake stands in for UE4SS's API: objects answer IsValid, properties are fields, and
 -- any method not defined below is recorded instead of run.
 
-local main, dir, missing = arg[1], arg[2], arg[3]
+local main, dir, missing = arg[1], arg[2], arg[3] ~= "" and arg[3] or nil
+local breakChecks, flowState = tonumber(arg[4] or 0), tonumber(arg[5] or "")
+local messages, screen, page = tonumber(arg[6] or 0), tonumber(arg[7] or 3), arg[8] or "none"
 CRYSTALIZE_IPC_DIR = dir
 
 local calls = {}
@@ -281,6 +288,13 @@ local world = {
 if missing then
     world[missing] = nil
 end
+if world.ShowFlowMgr then
+    world.ShowFlowMgr[1].CurrentState = flowState or world.ShowFlowMgr[1].CurrentState
+    world.ShowFlowMgr[1].GetNumMessagesThisBreak = function() return messages end
+    world.ShowFlowMgr[1].IsOnFirstSlideOfMessages = function() return page == "first" end
+    world.ShowFlowMgr[1].IsOnLastSlideOfMessages = function() return page == "last" end
+end
+world.ShellFlowMgr[1].GetCurrentScreen = function() return screen end
 
 function FindAllOf(class)
     return world[class]
@@ -307,5 +321,8 @@ f = assert(io.open(dir .. "request.lua", "w"))
 f:write(request)
 f:close()
 
+for _ = 1, breakChecks do
+    mod.closeBreak()
+end
 mod.poll(dir)
 io.stdout:write(mod.encode(mod.array(calls)))
