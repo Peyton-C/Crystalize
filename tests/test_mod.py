@@ -456,3 +456,12 @@ def test_show_break_check_leaves_gameplay_alone(ask):
 def test_show_break_check_without_a_show(ask):
     body, calls = ask("ping", missing="ShowFlowMgr", breaks=8)
     assert body["ok"] and calls == []
+
+
+def test_riser_sets_the_mode_and_keeps_the_other_options(ask):
+    body, calls = ask("riser", mode=1)
+    assert body["ok"] and body["result"] == {"mode": 1, "start": 276, "drop": 292}
+    # The options go over whole, or FUSER would zero the ones left out
+    options = next(c["args"][0] for c in calls if c["method"] == "SetTransitionOptions")
+    assert options["TempoKeyModeBehavior"] == 1 and options["ManualBPM"] == 120
+    assert options["PlaySongTransitionCels"] is True

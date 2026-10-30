@@ -86,6 +86,12 @@ RECORDED_PREFIX = "CraftedInstrument_"
 RECORD_LAND_SECONDS = 5
 RECORD_END_BEATS = 1
 
+# How long keep-alive leaves the decks to a riser. Both of FUSER's take 4 bars from the
+# downbeat they start on, emptying the decks a bar before the end, so a disc dropped in that
+# time would not last. In seconds, not beats: smart and random move the tempo during the
+# riser, random as low as 60 BPM, and 16 beats at that is the longest it can take
+RISER_HOLD_SECONDS = 16
+
 # The instrument slot performances play in. FUSER has four, apart from the decks
 PERFORM_SLOT = 0
 
@@ -120,6 +126,7 @@ class Player:
         # The same for decks faded below full, where a disc would drop unheard
         self._faded: set[int] = set()
         self._fades: dict[int, tuple[threading.Thread, threading.Event]] = {}
+        self._riser_ends = 0.0  # when the riser going stops holding the decks, by the clock
         self.on_send = None  # told every batch sent, for the set's log
         # When the set was last read and how many measures its open crowd requests had left
         self._request_hold: tuple[float, int] | None = None
@@ -433,6 +440,17 @@ class Player:
         beat, per_second, trip = self._clock()
         self._send_at(commands, _next_downbeat(beat, per_second, trip), beat, per_second, trip)
 
+    def riser(self, mode: int) -> None:
+        """Play a riser from the next downbeat. Sent just after it, FUSER starts the riser on
+        that very downbeat and grades it well: sent earlier it starts on the next one, and
+        tallies a Bad. Keep-alive stands off until it ends, from now and not from the send:
+        the wait for the downbeat can take a bar, and a drop in it changes what comes back."""
+        with self._lock:
+            self._riser_ends = time.monotonic() + RISER_HOLD_SECONDS
+        self.on_downbeat([("riser", {"mode": mode})])
+        with self._lock:
+            self._riser_ends = time.monotonic() + RISER_HOLD_SECONDS
+
     def on_pickup(self, commands, pickups: list[float], loop_beats: float) -> float:
         """Send `commands`, a drop, to reach FUSER on the next of its disc's pickups, the
         beats in its loop where a drop can come in ahead of the bar. Every disc's loop runs
@@ -587,6 +605,10 @@ class Player:
             busy = sum(1 for t in self._actions if lands - t < BUSY_BEATS / per_second)
             remembered = list(self._dropped)
             hold = self._request_hold
+            riser_ends = self._riser_ends
+        if lands < riser_ends:
+            stop.wait(max(wait, 0) + POLL_SECONDS)
+            return turn
         if hold and lands < hold[0] + hold[1] * BEATS_PER_BAR / per_second:
             with self._lock:
                 self._keep_status["waiting"] = "a crowd request is open"

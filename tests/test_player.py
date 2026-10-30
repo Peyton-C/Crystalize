@@ -278,6 +278,26 @@ def test_keep_alive_drops_again_once_idle(monkeypatch):
     p.stop_keep_alive()
 
 
+def test_keep_alive_stands_off_during_a_riser():
+    fuser = ClockBridge(beat=3.95, playing=("x", None, None, None))
+    p = Player(fuser)
+    p._riser_ends = time.monotonic() + 60
+    p.keep_alive(POOL)
+    time.sleep(0.2)
+    assert not fuser.sent
+    p._riser_ends = 0.0
+    wait_until(lambda: len(fuser.sent) == 1)
+    p.stop_keep_alive()
+
+
+def test_riser_holds_keep_alive_off_before_it_is_sent(monkeypatch):
+    p = Player(ClockBridge(beat=3.95))
+    held = []
+    monkeypatch.setattr(p, "on_downbeat", lambda _: held.append(p._riser_ends > time.monotonic()))
+    p.riser(1)
+    assert held == [True] and p._riser_ends > time.monotonic()
+
+
 def test_keep_alive_skips_discs_on_a_deck_or_remembered():
     fuser, p = keeper(beat=3.95, playing=("a", None, None, None))
     wait_until(lambda: len(fuser.sent) == 1)

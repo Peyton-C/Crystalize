@@ -469,7 +469,7 @@ def test_goal_text_fills_instruments_and_the_song():
     assert music.goal_text('Drop {lpGuitar} from "{RequiredSong}"', "Rock the Casbah") == \
         'Drop guitar loop (yellow) from "Rock the Casbah"'
     assert music.goal_text("Smart {Transition} using only {Horns}") == \
-        "Smart {Transition} using only {Horns}"  # not a disc type and instrument
+        "Smart using only {Horns}"  # not a disc type and instrument
 
 
 def test_get_set_names_the_featured_song(talk, monkeypatch):
@@ -904,6 +904,24 @@ def test_get_set_names_the_featured_effect(talk, monkeypatch):
     monkeypatch.setitem(SET_STATE, "goals", [goal])
     result, _ = call(talk, "get_set")
     assert result["goals"][0]["goal"] == "Use Low-Pass Filter on a beat (blue) disc"
+
+
+@pytest.mark.parametrize("args, mode, number", [({}, "smart", 0), ({"mode": "steady"}, "steady", 1),
+                                                ({"mode": "random"}, "random", 3)])
+def test_riser_sends_its_mode_on_the_downbeat(talk, fake, args, mode, number):
+    result, failed = call(talk, "riser", **args)
+    assert not failed and result == {"riser": mode, "bars": 4}
+    assert ("riser", {"mode": number}) in fake.calls
+
+
+def test_riser_rejects_an_unknown_mode(talk, fake):
+    _, failed = call(talk, "riser", mode="manual")
+    assert failed and "riser" not in fake.ops()
+
+
+def test_goal_text_drops_the_riser_icon():
+    from crystalize import music
+    assert music.goal_text("Play a {Transition} Steady Riser") == "Play a Steady Riser"
 
 
 def test_fade_deck_defaults_to_silence_over_a_bar(talk, fake):

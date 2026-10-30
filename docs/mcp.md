@@ -49,6 +49,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `record_disc` | Records a loop on an instrument and turns it into a disc, see Campaign |
 | `use_fx` | Turns an effect on or off over a deck, or over all four, see Campaign |
 | `fade_deck` | Fades a deck's volume up or down, see Campaign |
+| `riser` | Plays a riser into a drop of the cued discs, see Campaign |
 | `go_to` | Takes FUSER to a campaign set, freestyle or the main menu without its menus, see Launching |
 | `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck`, `take_snapshot` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar. A snapshot is kept in the player's profile, as one taken with the key is. A disc dropped on a deck Crystalize muted unmutes it on the same downbeat, since FUSER rewards nothing dropped on a muted deck |
 
@@ -133,6 +134,8 @@ Freshness, the mix's newness, rises when a disc is played, a mute changes or the
 
 `fade_deck` fades a deck for "Fade-out" goals, which count a deck holding the disc they want faded to silence. Crystalize moves the volume in steps, starting at once and taking `beats`, 4 unless you say. A fade has no timing points to earn, so it does not wait for a downbeat, and a cut with no fade does not count. The deck stays where the fade left it until you fade it back with `to` 1, you drop a disc on it, which brings it back to full, or the next set loads.
 
+`riser` plays FUSER's riser for "Play a Steady Riser" and "Riser to ..." goals. It starts on the next downbeat and takes 4 bars. A bar before the end every deck goes empty, and on the drop the discs cued on them land. Decks with nothing cued stay empty, so "Riser to 1 beat & 1 bass only" is those two discs cued and nothing else. With nothing cued at all, the mix playing comes back. `mode` says what happens to the key and tempo, which start moving during the riser: `steady` keeps them, `smart`, the default, moves to those of the cued disc, and `random` picks new ones, anywhere from 60 BPM up. A goal that names a mode needs it. `keep_alive` stands off until the riser ends. A riser pays the goal's points and no timing points.
+
 `get_set` reports the set as FUSER keeps it:
 
 | Field | What |
@@ -161,7 +164,7 @@ Freshness, the mix's newness, rises when a disc is played, a mute changes or the
 
 The meter drains about 1 a second once 6 seconds pass without an action, and a good action adds 3. A bad one takes 4, and so do a missed request and a missed goal. FUSER remembers the last 3 discs and counts more than 3 actions in 6 bars as too much, so keep it fed with one fresh disc every few bars rather than many at once.
 
-A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "{Transition} Smart Riser". Disc types, instruments, genres, tempos, keys, modes and the song, instrument and effect a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)", "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah by The Clash" and "Include 2+ {Genre} discs" reads "Include 2+ Rock discs".
+A goal's text keeps FUSER's placeholders where the mod cannot fill them yet, such as "{Horns}". Disc types, instruments, genres, tempos, keys, modes and the song, instrument and effect a goal features are filled in, so "Drop a {btType}" reads "Drop a beat (blue)", "Drop {lpGuitar} from {RequiredSong}" reads "Drop guitar loop (yellow) from Rock the Casbah by The Clash" and "Include 2+ {Genre} discs" reads "Include 2+ Rock discs".
 
 `await_event` waits for the set to change, so the agent does not spend its turns polling `get_set`. It returns the events and `get_set`'s view together. Crystalize compares each read with the last one the agent saw through either tool, so anything that happened while the agent was busy comes back at once. Otherwise it waits up to `seconds`, 20 by default and at most 60.
 

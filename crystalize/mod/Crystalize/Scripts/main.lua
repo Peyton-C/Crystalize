@@ -358,6 +358,31 @@ function ops.gain(args)
     return { deck = args.deck, gain = args.gain }
 end
 
+-- What the riser key does. The widget chooses the riser, and TransitionMgr.PlayTransition
+-- would need a soft pointer UE4SS cannot make. The mode stays set, as the menu's would, and
+-- only the mode changes: UE4SS takes the options as a table but wants every member
+function ops.riser(args)
+    local mgr = first("TransitionMgr")
+    if mgr:IsInTransition() then
+        error("a riser is already playing", 0)
+    end
+    local options = mgr:GetTransitionOptions()
+    mgr:SetTransitionOptions({
+        TempoKeyModeBehavior = args.mode,
+        DropBehavior = options.DropBehavior,
+        ManualBPM = options.ManualBPM,
+        ManualKey = options.ManualKey,
+        ManualMode = options.ManualMode,
+        SyncsToMasterTimeline = options.SyncsToMasterTimeline,
+        PlaySongTransitionCels = options.PlaySongTransitionCels,
+    })
+    first("WBP_TransitionTrigger_C"):TriggerTransition({})
+    if not mgr:IsInTransition() then
+        error("FUSER did not start the riser", 0)
+    end
+    return { mode = args.mode, start = mgr:GetTransitionStartBeat(), drop = mgr:GetTransitionDropBeat() }
+end
+
 function ops.solo(args)
     first("AudioController"):NetSoloTrack(checkDeck(args.deck), args.on == true)
     return { deck = args.deck, on = args.on == true }

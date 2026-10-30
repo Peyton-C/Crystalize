@@ -38,10 +38,14 @@ CROWD_STATES = ("low", "medium", "high", "peak")
 # EYearRange
 YEAR_RANGES = (None, "1600s", "1700s", "1800s") + tuple(f"{y}s" for y in range(1900, 2030, 10))
 
+# ETransitionTempoKeyModeBehavior, by the names goals give them. Its Manual has no goal
+RISER_MODES = {"smart": 0, "steady": 1, "random": 3}
+
 # FUSER writes a goal's name with placeholders it fills on screen. The disc types come from
 # their short names, the end of every disc's name; the rest the mod cannot read yet
 GOAL_PLACEHOLDERS = {"{btType}": "beat (blue)", "{bsType}": "bass (green)",
-                     "{lpType}": "loop (yellow)", "{ldType}": "lead (red)"}
+                     "{lpType}": "loop (yellow)", "{ldType}": "lead (red)",
+                     "{Transition} ": ""}  # the riser's icon
 DISC_TYPE_WORDS = {"bt": "beat (blue)", "bs": "bass (green)", "lp": "loop (yellow)",
                    "ld": "lead (red)"}
 # Not when another type follows, as in "Include only 1 {btType} & 1 {bsType}", which reads

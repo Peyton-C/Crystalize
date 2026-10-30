@@ -179,6 +179,7 @@ end
 local venueA = venue("VenueA", { prompt("M_0010", "SET {Num}: Opener"), INVALID })
 local venueB = venue("VenueB", { prompt("M_0161", "SET {Num}: Mute Point") })
 
+local riserStarted = false
 local world = {
     BP_Deck_C = {
         object("Deck0", { track = 0, CurPlayingDisc = disc("callmemaybebt"), CurQueuedDisc = INVALID }),
@@ -272,6 +273,17 @@ local world = {
         GetLastFreestyleVenueData = function() return venueB end }) },
     CrateMgr = { object("CrateMgr") },
     DeskState = { object("DeskState") },
+    TransitionMgr = { object("TransitionMgr", {
+        IsInTransition = function() return riserStarted end,
+        GetTransitionOptions = function() return { TempoKeyModeBehavior = 0, DropBehavior = 0,
+            ManualBPM = 120, ManualKey = 0, ManualMode = 0, SyncsToMasterTimeline = true,
+            PlaySongTransitionCels = true } end,
+        GetTransitionStartBeat = function() return 276 end,
+        GetTransitionDropBeat = function() return 292 end,
+    }) },
+    WBP_TransitionTrigger_C = { object("TransitionTrigger", {
+        TriggerTransition = function() riserStarted = true end,
+    }) },
     AudioController = { object("AudioController") },
     DeckState = { object("DeckState", { GetDeckGain = function(_, track) return track == 1 and 0.5 or 1 end }) },
     SavedMomentsMgr = { object("SavedMomentsMgr") },

@@ -104,8 +104,8 @@ TOOLS = [
                        "medium, high, peak) and warnings, the "
                        "mix's freshness from 0 to 100, which a new drop raises and a still "
                        "stretch lets fade, and the score. Measures are FUSER's own, not a "
-                       "mix's bars. A goal's text may keep a placeholder such as {Transition} "
-                       "the mod cannot read yet.",
+                       "mix's bars. A goal's text may keep a placeholder the mod cannot read "
+                       "yet.",
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
@@ -306,6 +306,20 @@ TOOLS = [
         "name": "eject",
         "description": "Stop a deck and take its disc off, at the end of the bar.",
         "inputSchema": {"type": "object", "properties": {"deck": DECK}, "required": ["deck"]},
+    },
+    {
+        "name": "riser",
+        "description": "Play a riser, FUSER's 4 bar build into a drop, from the next downbeat. "
+                       "A bar before the end it empties every deck, and on the drop the discs "
+                       "cued with drop_disc's queue land, on their decks. The other decks stay "
+                       "empty, unless nothing was cued, when the mix playing comes back. Cue "
+                       "first, and leave the decks alone until it ends.",
+        "inputSchema": {"type": "object", "properties": {
+            "mode": {"type": "string", "enum": list(music.RISER_MODES),
+                     "description": "What it does to key and tempo: smart moves to the cued "
+                                    "disc's, steady keeps them, random picks new ones, which "
+                                    "can be far off. Default smart"},
+        }},
     },
     {
         "name": "take_snapshot",
@@ -519,6 +533,9 @@ PROMPTS = [
             "it after unless the goal wants it silent. Fade-out a disc means fade_deck on "
             "its deck; fade it back with to 1 unless the goal wants it silent. Fade in "
             "means fade_deck to 0 first, then to 1. Take a Snapshot means take_snapshot. A "
+            "Riser goal means riser, in the mode it names (Steady, Smart, Random; smart if it "
+            "names none). Riser to some discs means cueing just those first: uncued decks end "
+            "empty, which is what only asks for. A "
             "Perform goal counts each bar an instrument plays: perform with bars as many as "
             "it still needs. Its section waits until it is done. Make an instrument's loop, "
             "then drop the disc means record_disc, which does both. Any other goal for an "
@@ -546,7 +563,7 @@ PROMPTS = [
             "freshness pays for, but not during such a goal.\n"
             "6. At set_ended, keep_alive with stop, and say the stars and what cost points: "
             "get_set's points show requests, combos, goals, timing and the crowd meter.\n\n"
-            "If a goal keeps a placeholder Crystalize cannot fill, such as {Transition}, or "
+            "If a goal keeps a placeholder Crystalize cannot fill, or "
             "needs a tool it lacks, say so and carry on with the rest."),
     },
     {
@@ -1275,6 +1292,13 @@ class Server:
     def _tool_take_snapshot(self, args: dict) -> dict:
         self.player.on_downbeat([("snapshot", {})])
         return {"snapshot": True}
+
+    def _tool_riser(self, args: dict) -> dict:
+        mode = args.get("mode", "smart")
+        if mode not in music.RISER_MODES:
+            raise ValueError(f"mode is one of {', '.join(music.RISER_MODES)}")
+        self.player.riser(music.RISER_MODES[mode])
+        return {"riser": mode, "bars": 4}
 
     def _tool_perform(self, args: dict) -> dict:
         if args.get("stop"):
