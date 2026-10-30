@@ -272,6 +272,7 @@ local world = {
     CrateMgr = { object("CrateMgr") },
     DeskState = { object("DeskState") },
     AudioController = { object("AudioController") },
+    DeckState = { object("DeckState", { GetDeckGain = function(_, track) return track == 1 and 0.5 or 1 end }) },
     SavedMomentsMgr = { object("SavedMomentsMgr") },
     InstrumentCelData = instruments,
     AudioEffectData = effects,

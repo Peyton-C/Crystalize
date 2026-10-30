@@ -66,6 +66,13 @@ PERFORM_END_BEATS = 2
 # at once in the game, but only after it had been loaded before
 PERFORM_LOAD_SECONDS = 5
 
+# A fade moves the deck's fader this many times a beat. FUSER counts a fade goal only for a
+# fader that moved on its way down: cut straight to 0, the same goal stayed at nothing. A
+# 1 beat fade in 4 steps counted, and so did a 4 beat one in 16. Unlike every other action
+# it has no perfect timing: FUSER grades each fade Ok wherever it starts or lands and pays
+# no timing points, so a fade starts at once instead of waiting for a downbeat
+FADE_STEPS_PER_BEAT = 4
+
 # The instrument slot performances play in. FUSER has four, apart from the decks
 PERFORM_SLOT = 0
 
@@ -97,6 +104,9 @@ class Player:
         # Decks this player muted and has not unmuted. FUSER's state does not say, and a
         # disc dropped on a muted deck earns nothing: no goal, request or crowd counts it
         self._muted: set[int] = set()
+        # The same for decks faded below full, where a disc would drop unheard
+        self._faded: set[int] = set()
+        self._fades: dict[int, tuple[threading.Thread, threading.Event]] = {}
         self.on_send = None  # told every batch sent, for the set's log
         # When the set was last read and how many measures its open crowd requests had left
         self._request_hold: tuple[float, int] | None = None
@@ -190,6 +200,52 @@ class Player:
         if self._performer and self._performer.is_alive():
             self._perform_stop.set()
             self._performer.join()
+
+    def fade(self, deck: int, start: float, to: float, beats: int) -> None:
+        """Move `deck`'s volume from `start` to `to` over `beats`, in the background.
+        Replaces any fade already going on that deck."""
+        self._stop_fade(deck)
+        stop = threading.Event()
+        thread = threading.Thread(target=self._fade, args=(deck, start, to, beats, stop),
+                                  daemon=True)
+        self._fades[deck] = (thread, stop)
+        thread.start()
+
+    def _stop_fade(self, deck: int) -> None:
+        thread, stop = self._fades.pop(deck, (None, None))
+        if thread and thread.is_alive():
+            stop.set()
+            thread.join()
+
+    def stop_fades(self) -> None:
+        """Stop every fade where it stands, as when the session is left. FUSER puts every
+        deck back at full when it loads a set, so nothing stays faded."""
+        for deck in list(self._fades):
+            self._stop_fade(deck)
+        with self._lock:
+            self._faded.clear()
+
+    def _fade(self, deck, start, to, beats, stop) -> None:
+        # Paced by the wall clock, not FUSER's beat: that clock stands still once a set ends,
+        # and a fade waiting on it would never finish
+        steps = beats * FADE_STEPS_PER_BEAT
+        try:
+            step_seconds = 60 / max(self.bridge.call("clock").get("bpm") or 0, 1) / FADE_STEPS_PER_BEAT
+            with self._lock:
+                self._faded.add(deck)
+            if self.on_send:
+                self.on_send([("fade", {"deck": deck, "to": to, "beats": beats})])
+            for step in range(1, steps + 1):
+                # Sent alone rather than through _send: the steps are one action to the
+                # crowd and the log, not dozens
+                self.bridge.call("gain", deck=deck, gain=start + (to - start) * step / steps)
+                if step < steps and stop.wait(step_seconds):
+                    return
+            if to >= 1:
+                with self._lock:
+                    self._faded.discard(deck)
+        except GameError:
+            pass  # FUSER has gone, and the deck with it
 
     def perform_status(self) -> dict | None:
         with self._lock:
@@ -365,6 +421,9 @@ class Player:
                 if op == "drop" and not args.get("queue") and args["deck"] in self._muted \
                         and ("mute", {"deck": args["deck"], "on": False}) not in commands:
                     unmute.append(("mute", {"deck": args["deck"], "on": False}))
+                if op == "drop" and not args.get("queue") and args["deck"] in self._faded:
+                    unmute.append(("gain", {"deck": args["deck"], "gain": 1}))
+                    self._faded.discard(args["deck"])
             commands = unmute + list(commands)
             for op, args in commands:
                 if op == "mute":

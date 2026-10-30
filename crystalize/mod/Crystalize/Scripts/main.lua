@@ -182,6 +182,12 @@ function ops.ping()
     return { version = VERSION }
 end
 
+-- A deck's volume from 0 to 1, or NULL where it cannot be read
+local function deckGain(track)
+    local ok, gain = pcall(function() return FindFirstOf("DeckState"):GetDeckGain(track) end)
+    return ok and plain(gain) or NULL
+end
+
 function ops.state()
     local audio = first("HypeAudio")
     local state = {
@@ -199,6 +205,7 @@ function ops.state()
         state.decks[track + 1] = deck and {
             playing = discName(deck.CurPlayingDisc),
             queued = discName(deck.CurQueuedDisc),
+            gain = deckGain(track),
         } or NULL
     end
     return state
@@ -334,6 +341,12 @@ end
 function ops.mute(args)
     first("AudioController"):NetMuteTrack(checkDeck(args.deck), args.on == true)
     return { deck = args.deck, on = args.on == true }
+end
+
+-- One step of a fade. FUSER has no fade of its own, the deck's fader only moves in steps
+function ops.gain(args)
+    first("AudioController"):NetSetGainForTrack(checkDeck(args.deck), args.gain)
+    return { deck = args.deck, gain = args.gain }
 end
 
 function ops.solo(args)

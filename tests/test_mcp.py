@@ -2,6 +2,7 @@
 import copy
 import io
 import json
+import time
 
 import pytest
 
@@ -865,3 +866,17 @@ def test_get_set_names_the_featured_effect(talk, monkeypatch):
     monkeypatch.setitem(SET_STATE, "goals", [goal])
     result, _ = call(talk, "get_set")
     assert result["goals"][0]["goal"] == "Use Low-Pass Filter on a beat (blue) disc"
+
+
+def test_fade_deck_defaults_to_silence_over_a_bar(talk, fake):
+    result, failed = call(talk, "fade_deck", deck=3)
+    assert not failed and result == {"deck": 3, "from": 1, "to": 0, "beats": 4}
+    time.sleep(0.05)
+    assert fake.calls[-1][0] == "gain" and fake.calls[-1][1]["deck"] == 2
+
+
+@pytest.mark.parametrize("args", [{"to": 2}, {"to": True}, {"beats": 0}, {"beats": 1.5},
+                                  {"to": 1}])  # the last: already at full, so no fade
+def test_fade_deck_rejects(talk, fake, args):
+    _, failed = call(talk, "fade_deck", deck=1, **args)
+    assert failed and "gain" not in fake.ops()

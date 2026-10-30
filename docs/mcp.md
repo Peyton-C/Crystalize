@@ -47,6 +47,7 @@ Crystalize offers three prompts, which clients such as Claude Code show as slash
 | `keep_alive` | Swaps discs from a list now and then, so a campaign set's crowd meter does not drain while the agent thinks |
 | `perform` | Plays an instrument over the mix for a number of bars, see Campaign |
 | `use_fx` | Turns an effect on or off over a deck, or over all four, see Campaign |
+| `fade_deck` | Fades a deck's volume up or down, see Campaign |
 | `go_to` | Takes FUSER to a campaign set, freestyle or the main menu without its menus, see Launching |
 | `drop_disc`, `drop_queue`, `eject`, `set_key`, `set_tempo`, `mute_deck`, `solo_deck`, `take_snapshot` | Act outside a plan, timed to the next downbeat as `play_mix` times a bar. A snapshot is kept in the player's profile, as one taken with the key is. A disc dropped on a deck Crystalize muted unmutes it on the same downbeat, since FUSER rewards nothing dropped on a muted deck |
 
@@ -126,6 +127,8 @@ Freshness, the mix's newness, rises when a disc is played, a mute changes or the
 `perform` plays an instrument for "Perform on {CustomInstrument} Instrument" and "Perform on any Instrument" goals, which count one-bar performances. Crystalize loads the instrument, presses a pad on each downbeat from the next and lets go just before the bar ends, then unloads it after the last bar. Without `instrument` it plays the one the set features; with one, it takes a name or title of any instrument FUSER has. It returns at once, `get_state` shows how many bars it has `played`, and `stop` lets go early. Sections with a Perform goal loop until it is done, so an agent that cannot perform stalls there. Wait about 3 measures after the goal starts, as for any goal, and ask for as many bars as it still needs.
 
 `use_fx` switches an effect for "Use {FX} {Effect} on a ..." and "Use any {FX} Effect" goals, which count each time the effect goes on over a deck holding the disc they want. Each deck has a slot for one effect and the master has one over all four. Crystalize loads the effect into the slot if it holds another, then turns it on or off on the next downbeat. Without `fx` it keeps the slot's effect, or loads the one the set features into an empty slot; with one, it takes a name or title of any effect FUSER has. Turn it off a bar later and on again for the next count. "Drop a lead on Sync Delay" is the effect turned on over the deck, then a drop there, and a Swap goal on an effect is the same with `drop_disc` and `swap`. Timed this way a switch grades perfect, as a drop does. Goals do not count during a show break's dialog, so Crystalize closes it as soon as it is up. Sets reached with `go_to` skip the loadout screen, so the slots start empty.
+
+`fade_deck` fades a deck for "Fade-out" goals, which count a deck holding the disc they want faded to silence. Crystalize moves the volume in steps, starting at once and taking `beats`, 4 unless you say. A fade has no timing points to earn, so it does not wait for a downbeat, and a cut with no fade does not count. The deck stays where the fade left it until you fade it back with `to` 1, you drop a disc on it, which brings it back to full, or the next set loads.
 
 `get_set` reports the set as FUSER keeps it:
 

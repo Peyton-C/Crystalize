@@ -46,8 +46,8 @@ def test_state(ask):
     state = body["result"]
     assert (state["key"], state["mode"], state["bpm"]) == (7, 1, 120)
     assert (state["bpm_min"], state["bpm_max"]) == (60, 200)
-    assert state["decks"][0] == {"playing": "callmemaybebt", "queued": None}
-    assert state["decks"][1] == {"playing": None, "queued": "callmemaybebs"}
+    assert state["decks"][0] == {"playing": "callmemaybebt", "queued": None, "gain": 1}
+    assert state["decks"][1] == {"playing": None, "queued": "callmemaybebs", "gain": 0.5}
     assert len(state["decks"]) == 4
 
 
@@ -109,6 +109,7 @@ def test_key_sets_mode_then_key(ask):
     ("set_tempo", {"bpm": 128}, "NetSetTempo", [128]),
     ("mute", {"deck": 1, "on": True}, "NetMuteTrack", [1, True]),
     ("solo", {"deck": 0, "on": False}, "NetSoloTrack", [0, False]),
+    ("gain", {"deck": 2, "gain": 0.5}, "NetSetGainForTrack", [2, 0.5]),
     ("snapshot", {}, "SaveCurrentMoment", []),
 ])
 def test_simple_ops(ask, op, args, method, expected):

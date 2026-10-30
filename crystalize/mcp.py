@@ -60,6 +60,7 @@ GO_TO_SIGN_IN_SECONDS = 45
 METER_LOW = 30
 # The longest performance perform plays in one call. Perform goals have asked for 4 and 8
 PERFORM_BARS = 16
+FADE_MAX_BEATS = 64
 
 DECK = {"type": "integer", "minimum": 1, "maximum": 4, "description": "1 to 4"}
 KEY = {"type": "string", "description": "Ab for A flat major, Abm for minor"}
@@ -360,6 +361,21 @@ TOOLS = [
                         "required": ["deck", "mute"]},
     },
     {
+        "name": "fade_deck",
+        "description": "Fade a deck's volume, starting now and taking `beats`. A fade has no "
+                       "timing to hit, so it does not wait for a downbeat. A Fade-out goal "
+                       "counts a deck holding the disc it wants faded to 0. The deck stays "
+                       "there until faded back, or until a disc is dropped on it, which "
+                       "brings it back to full. get_state shows a deck below full.",
+        "inputSchema": {"type": "object", "properties": {
+            "deck": DECK,
+            "to": {"type": "number", "minimum": 0, "maximum": 1,
+                   "description": "The volume to end at, 0 silent and 1 full. Default 0"},
+            "beats": {"type": "integer", "minimum": 1, "maximum": FADE_MAX_BEATS,
+                      "description": "Default 4"},
+        }, "required": ["deck"]},
+    },
+    {
         "name": "solo_deck",
         "description": "Solo or unsolo a deck, from the next bar.",
         "inputSchema": {"type": "object", "properties": {"deck": DECK, "solo": {"type": "boolean"}},
@@ -484,7 +500,9 @@ PROMPTS = [
             "Include only N discs counts every deck: Include only 1 disc, a beat, is one beat "
             "playing alone. Eject a disc means eject, and only counts on a deck with a disc, so "
             "check get_state first. Mute a beat, a loop or a song's disc means mute_deck; unmute "
-            "it after unless the goal wants it silent. Take a Snapshot means take_snapshot. A "
+            "it after unless the goal wants it silent. Fade-out a disc means fade_deck on "
+            "its deck; fade it back with to 1 unless the goal wants it silent. Fade in "
+            "means fade_deck to 0 first, then to 1. Take a Snapshot means take_snapshot. A "
             "Perform goal counts each bar an instrument plays: perform with bars as many as "
             "it still needs. Its section waits until it is done. A Use FX goal counts the "
             "effect turned on over a deck holding the disc it wants: use_fx on that deck, "
@@ -568,6 +586,7 @@ class Server:
             call.join()
         self.player.stop()
         self.player.stop_perform()
+        self.player.stop_fades()
         return 0
 
     def _send(self, message: dict) -> None:
@@ -718,6 +737,8 @@ class Server:
                      "queued": self._describe(deck.get("queued"))}
             if i < len(effects) and effects[i]:
                 entry["fx"] = _fx(effects[i])
+            if deck.get("gain") is not None and deck["gain"] < 1:
+                entry["volume"] = round(deck["gain"], 2)
             decks.append(entry)
         self._bpm_range = [state["bpm_min"], state["bpm_max"]]
         result = {"key": music.key_name(state["key"], state["mode"]), "bpm": state["bpm"],
@@ -1310,12 +1331,30 @@ class Server:
         self.player.on_downbeat([("mute", {"deck": _deck(args), "on": bool(args["mute"])})])
         return {"deck": args["deck"], "muted": bool(args["mute"])}
 
+    def _tool_fade_deck(self, args: dict) -> dict:
+        deck = _deck(args)
+        to = args.get("to", 0)
+        beats = args.get("beats", 4)
+        if isinstance(to, bool) or not isinstance(to, (int, float)) or not 0 <= to <= 1:
+            raise ValueError("to is from 0 to 1")
+        if not isinstance(beats, int) or isinstance(beats, bool) \
+                or not 1 <= beats <= FADE_MAX_BEATS:
+            raise ValueError(f"beats is 1 to {FADE_MAX_BEATS}")
+        start = (self.bridge.call("state")["decks"][deck] or {}).get("gain")
+        start = 1 if start is None else start
+        if start == to:
+            # FUSER counts the fader moving, so this would be no fade at all
+            raise ValueError(f"deck {args['deck']} is already at volume {to}")
+        self.player.fade(deck, start, to, beats)
+        return {"deck": args["deck"], "from": round(start, 2), "to": to, "beats": beats}
+
     def _tool_go_to(self, args: dict) -> dict:
         # Nothing may drop on a deck while the map under it is replaced, and the set being
         # left is over, so its log and what the agent last saw of it go too
         self.player.stop()
         self.player.stop_keep_alive()
         self.player.stop_perform()
+        self.player.stop_fades()
         self._log.end()
         self._seen, self._warned = None, set()
         try:

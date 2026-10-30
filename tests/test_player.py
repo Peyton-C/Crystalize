@@ -539,3 +539,53 @@ def test_an_instrument_that_never_loads_is_reported_and_unloaded(monkeypatch):
     wait_until(lambda: not p.perform_status()["on"])
     assert "did not load" in p.perform_status()["error"]
     assert [op for _, op, _ in fuser.sent] == ["perform_begin", "perform_end"]
+
+
+def gains(fuser):
+    return [a["gain"] for _, op, a in fuser.sent if op == "gain"]
+
+
+def test_a_fade_steps_the_deck_down_and_lands_exactly(monkeypatch):
+    fuser = ClockBridge()
+    p = Player(fuser)
+    p.fade(2, 1, 0, 1)
+    wait_until(lambda: len(gains(fuser)) == 4)
+    assert gains(fuser) == [0.75, 0.5, 0.25, 0]
+    assert {a["deck"] for _, op, a in fuser.sent if op == "gain"} == {2}
+
+
+def test_a_fade_starts_without_waiting_for_a_downbeat():
+    fuser = ClockBridge(beat=1.5)  # the clock never moves, as when a set has ended
+    p = Player(fuser)
+    p.fade(0, 1, 0, 1)
+    wait_until(lambda: gains(fuser) == [0.75, 0.5, 0.25, 0])
+
+
+def test_a_new_fade_replaces_the_one_going_on_that_deck():
+    fuser = ClockBridge()
+    p = Player(fuser)
+    p.fade(1, 1, 0, 64)
+    wait_until(lambda: gains(fuser))
+    p.fade(1, 0.9, 1, 1)
+    wait_until(lambda: gains(fuser)[-1] == 1)
+    assert gains(fuser)[-4:] == [pytest.approx(0.925), pytest.approx(0.95), pytest.approx(0.975), 1]
+
+
+def test_a_drop_on_a_faded_deck_brings_it_back_in_the_same_request():
+    fuser = ClockBridge()
+    p = Player(fuser)
+    p.fade(2, 1, 0, 1)
+    wait_until(lambda: gains(fuser)[-1:] == [0])
+    p._send([("drop", {"deck": 2, "name": "x"})])
+    assert fuser.requests[-1] == ["gain", "drop"]
+    p._send([("drop", {"deck": 2, "name": "y"})])
+    assert fuser.requests[-1] == ["drop"]  # already back
+
+
+def test_a_deck_faded_back_to_full_needs_nothing_on_a_drop():
+    fuser = ClockBridge()
+    p = Player(fuser)
+    p.fade(2, 0, 1, 1)
+    wait_until(lambda: gains(fuser)[-1:] == [1])
+    p._send([("drop", {"deck": 2, "name": "x"})])
+    assert fuser.requests[-1] == ["drop"]
